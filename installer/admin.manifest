@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Elevation is asked for up front, by the manifest, so that Windows shows the
+  consent prompt before the program starts instead of the program discovering
+  halfway through that it cannot write. Registering an ASIO driver writes to
+  HKEY_CLASSES_ROOT and to HKLM\SOFTWARE\ASIO, and the driver file goes into
+  %ProgramFiles%; none of that is possible without elevation.
+
+  The program also checks at run time and stops with a clear message if it finds
+  itself unelevated, which is what happens if this manifest is ever stripped.
+
+  DPI AWARENESS, and why it is PerMonitorV2.
+
+  Without a declaration Windows treats a process as unaware, scales its window as
+  a bitmap and the result is soft, smeared text. On the machine this was written
+  for that is not a theoretical complaint: it is a high density screen and the
+  window would look blurred on it, which is precisely the "something cheap is
+  running" impression the window exists to remove.
+
+  PerMonitorV2 is asked for because it is the only mode where Windows also scales
+  the CAPTION, the system menu and the dialogs to match, and where the window is
+  told about a DPI change through WM_DPICHANGED with the rectangle it should move
+  to. gui.cpp handles that message: it rebuilds the fonts, decodes the device
+  photograph again at the new pixel size, and lays the page out again. Per monitor
+  v1 is listed after it as the fallback for a Windows that does not know v2, and
+  the older <dpiAware>true</dpiAware> is kept as the last fallback, which gets
+  system awareness - correct on one monitor and stale after a DPI change, which is
+  still far better than a bitmap stretch.
+
+  COMMON CONTROLS 6. Without this dependency the buttons and the progress bar are
+  drawn in the Windows 95 style, which is exactly the look being removed. It
+  changes the appearance of controls and nothing else; the driver's own
+  registration code runs in this process and does not touch a control.
+
+  Deliberately NOT set here:
+    - activeCodePage UTF-8. The driver's own registration code uses the ANSI
+      registry API, and it runs inside this process. Changing the process code
+      page would change how it stores the driver path.
+    - longPathAware. It only takes effect together with a machine wide policy,
+      so relying on it would make behaviour depend on the machine.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32"
+                    name="BCD3000.AsioDriver.Installer"
+                    version="1.0.0.0"
+                    processorArchitecture="*"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2,PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32"
+                        name="Microsoft.Windows.Common-Controls"
+                        version="6.0.0.0"
+                        processorArchitecture="*"
+                        publicKeyToken="6595b64144ccf1df"
+                        language="*"/>
+    </dependentAssembly>
+  </dependency>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

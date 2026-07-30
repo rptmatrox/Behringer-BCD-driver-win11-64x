@@ -1,0 +1,48 @@
+# Artefatos de build C++
+*.obj
+*.exp
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+
+# Python
+__pycache__/
+*.pyc
+poc/build/
+poc/dist/
+poc/*.spec
+
+# Downloads
+native/asiosdk.zip
+
+# Material de terceiros que NAO pode ser redistribuido por nos.
+# Fica no disco para compilar, mas fora do repositorio.
+#
+# ASIOSDK: a licenca da Steinberg (native/ASIOSDK/LICENSE.txt) proibe
+# redistribuir sem acordo assinado. Quem clonar baixa da Steinberg e extrai
+# aqui -- as instrucoes estao no README.
+native/ASIOSDK/
+
+# Drivers originais: driver proprietario da Behringer de 2010, com .sys, .cat
+# e certificado de fornecedor. Nao e nosso para distribuir, e binarios de
+# driver assinados de terceiros nao devem ir para repositorio publico.
+Drivers originais/
+
+# Area de trabalho da execucao por subagentes
+.superpowers/
+
+# Audio cru de teste (gerado com ffmpeg, nao versionar)
+*.raw
+
+# Recursos compilados (o setup.res embute o pacote inteiro: ~8 MB)
+*.res
+
+# Despejo do arnes do instalador (installer/verify/final.txt). E SAIDA, nao fonte:
+# regenerada por `bcdverify dump`, e ninguem no repositorio a le. Foi rastreada por
+# engano e carregava o caminho do perfil de quem a gerou, porque o texto inclui o
+# que logFilePath() devolve -- ou seja, qualquer regeneracao em qualquer maquina
+# embute o caminho de alguem. A evidencia duravel e o FONTE do arnes, que e
+# versionado, mais o codigo de saida dele.
+installer/verify/final.txt

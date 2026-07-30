@@ -1,0 +1,30 @@
+// Resources of the verification harness. NOT part of the product.
+//
+// The payloads are embedded so that the pages the harness renders are the pages
+// the real installer renders: printPayloadReport() would otherwise print three
+// [FAIL] lines into the log pane and the picture would be of a broken build.
+//
+// The paths are relative to THIS FILE, which is how rc resolves a file reference
+// and how installer\setup.rc already writes the same four payloads.
+//
+// They used to be absolute, with a comment saying that was on purpose because the
+// harness did not live next to the sources it borrows from. That was true while it
+// was a scratch directory and stopped being true the moment it was committed. An
+// absolute path also carries the profile name of whoever wrote it into the
+// repository, and it makes the harness unbuildable for anybody who clones - which
+// is the same as not having a harness, because evidence nobody can reproduce is
+// not evidence.
+
+#include <winresrc.h>
+
+#define RT_MANIFEST_TYPE     24
+#define MANIFEST_RESOURCE_ID 1
+
+MANIFEST_RESOURCE_ID RT_MANIFEST_TYPE "harness.manifest"
+
+1 ICON "..\\bcd3000.ico"
+
+101 RCDATA "..\\..\\native\\bcdasio\\BcdAsio.dll"
+102 RCDATA "..\\..\\poc\\dist\\BCD3000Bridge.exe"
+103 RCDATA "..\\BCD3000Uninstall.exe"
+110 RCDATA "..\\..\\docs\\BCD3000.PNG"

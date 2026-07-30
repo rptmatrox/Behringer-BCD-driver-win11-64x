@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  BCD3000Check.exe asks for nothing. It only reads, so it must not trigger a
+  consent prompt: being runnable without elevation is the whole point of having
+  it as a separate program.
+
+  asInvoker is stated explicitly rather than left to the default, because
+  Windows applies installer detection heuristics to programs with no manifest and
+  can decide on its own that something needs elevation.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32"
+                    name="BCD3000.AsioDriver.Check"
+                    version="1.0.0.0"
+                    processorArchitecture="*"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

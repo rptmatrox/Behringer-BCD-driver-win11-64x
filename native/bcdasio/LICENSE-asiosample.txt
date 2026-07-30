@@ -1,0 +1,93 @@
+AVISO DE LICENCA DE TERCEIRO - exemplo asiosample da Steinberg (BSD de 3 clausulas)
+===================================================================================
+
+POR QUE ESTE ARQUIVO EXISTE
+
+Dois arquivos deste diretorio sao DERIVADOS do exemplo `asiosample` do ASIO SDK da
+Steinberg:
+
+    native/bcdasio/bcdasio.cpp    (derivado de driver/asiosample/asiosmpl.cpp)
+    native/bcdasio/bcdasio.h      (derivado de driver/asiosample/asiosmpl.h)
+
+OS NOMES DOS ARQUIVOS SAO `asiosmpl`, e nao `asiosample`. O EXEMPLO e o DIRETORIO se
+chamam asiosample; os dois arquivos dentro dele nao. Esta secao citava
+`asiosample.{cpp,h}`, que NAO EXISTEM. Conferido na listagem do SDK em disco, onde
+`driver/asiosample/` contem: asiosmpl.cpp, asiosmpl.h, wintimer.cpp, mactimer.cpp,
+macnanosecs.cpp, makesamp.cpp, asiosample.def e asiosample.txt.
+
+Nao e detalhe cosmetico. Depois que o SDK sair deste disco, a unica forma de alguem
+verificar a atribuicao e pelos nomes escritos aqui - e atribuicao e a UNICA obrigacao
+da BSD de 3 clausulas que herdamos.
+
+Esse exemplo e distribuido sob a licenca BSD de 3 clausulas reproduzida abaixo, com o
+texto EMBUTIDO em cada arquivo. A obrigacao dessa licenca e uma so: manter o aviso de
+direito autoral e o texto das condicoes. E o que este arquivo faz.
+
+Ate a etapa C2 deste projeto o texto vivia em `native/bcdasio/wintimer.cpp`, que era o
+ultimo arquivo do exemplo ainda compilado no produto. Esse arquivo foi aposentado (a
+funcao `getNanoSeconds` dele foi reescrita em `native/bcdasio/nanoclock.cpp`, com
+relogio proprio), e com ele sairia tambem o unico lugar do repositorio onde o texto
+estava. Como `bcdasio.cpp` e `bcdasio.h` continuam sendo derivados, a obrigacao
+continua valendo - e por isso o texto foi movido para ca em vez de apagado.
+
+ESTA LICENCA NAO E A DO SDK
+
+Ela vale SO para o material do exemplo. Os arquivos de `ASIOSDK/common/` que o driver
+usava - `register.cpp`, `combase.{h,cpp}`, `dllentry.cpp`, `debugmessage.cpp` e os
+cabecalhos `asiosys.h`, `asio.h`, `iasiodrv.h` - estao sob outras licencas (a dupla da
+Steinberg, proprietaria ou GPL v3, e um aviso proprio da Microsoft de 1992-1996) e
+NENHUM deles entra mais no `BcdAsio.dll`. Ver a nota no topo de `bcdasio.cpp`.
+
+
+TEXTO DA LICENCA, REPRODUZIDO LITERALMENTE
+==========================================
+
+DE ONDE ELE FOI COPIADO, e o quanto a copia e fiel - medido, nao lembrado:
+
+O bloco abaixo e o cabecalho de `driver/asiosample/wintimer.cpp` do ASIO SDK, que e o
+mesmo cabecalho que estava em `native/bcdasio/wintimer.cpp` antes de a etapa C2 aposentar
+esse arquivo (conferido tambem contra `git show 23892e9~1:native/bcdasio/wintimer.cpp`;
+as duas copias sao iguais entre si).
+
+Sao 36 linhas. 24 batem byte a byte com o original; as outras 12 diferem SO por um
+espaco no FIM da linha, que esta copia nao trouxe. Nenhuma palavra, nenhuma pontuacao e
+nenhuma quebra de linha muda: o aviso de direito autoral, as tres condicoes e o
+disclaimer estao integrais. Ou seja - a obrigacao da licenca esta cumprida, e "byte a
+byte identico" NAO seria verdade se alguem afirmasse isso.
+
+//------------------------------------------------------------------------
+// Project     : ASIO SDK
+//
+// Category    : Helpers
+// Filename    : driver/asiosample/wintimer.cpp
+// Created by  : Steinberg, 05/1996
+// Description : Steinberg Audio Stream I/O Sample
+//	**** Windows specific ****
+//
+//-----------------------------------------------------------------------------
+// LICENSE
+// (c) 2025, Steinberg Media Technologies GmbH, All Rights Reserved
+//-----------------------------------------------------------------------------
+// Redistribution and use in source and binary forms, with or without modification,
+// are permitted provided that the following conditions are met:
+//
+//   * Redistributions of source code must retain the above copyright notice,
+//     this list of conditions and the following disclaimer.
+//   * Redistributions in binary form must reproduce the above copyright notice,
+//     this list of conditions and the following disclaimer in the documentation
+//     and/or other materials provided with the distribution.
+//   * Neither the name of the Steinberg Media Technologies nor the names of its
+//     contributors may be used to endorse or promote products derived from this
+//     software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+// ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+// IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+// INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+// LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+// OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE  OF THIS SOFTWARE, EVEN IF ADVISED
+// OF THE POSSIBILITY OF SUCH DAMAGE.
+//-----------------------------------------------------------------------------
