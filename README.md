@@ -19,7 +19,8 @@ the project, and it is the reason it is built the way it is.
 ### **[Download the installer — v1.0.0 (ZIP, 9.2 MB)](https://github.com/rptmatrox/Behringer-BCD-driver-win11-64x/releases/latest/download/BCD3000-driver-v1.0.0-win11-x64.zip)**
 
 Unpack it and run **`BCD3000Setup.exe`**. The ZIP also carries the uninstaller, a read-only
-machine check, and a `LEIA-ME.txt` in Portuguese.
+machine check, and the same instructions in two languages — `README.txt` in English and
+`LEIA-ME.txt` in Portuguese.
 [All releases and full notes](https://github.com/rptmatrox/Behringer-BCD-driver-win11-64x/releases/latest).
 
 **Read these four lines before you install — they are the ones that surprise people:**
