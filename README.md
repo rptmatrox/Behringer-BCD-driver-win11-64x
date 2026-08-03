@@ -14,6 +14,34 @@ the project, and it is the reason it is built the way it is.
 
 ---
 
+## ⬇️ Download
+
+### **[Download the installer — v1.0.0 (ZIP, 9.2 MB)](https://github.com/rptmatrox/Behringer-BCD-driver-win11-64x/releases/latest/download/BCD3000-driver-v1.0.0-win11-x64.zip)**
+
+Unpack it and run **`BCD3000Setup.exe`**. The ZIP also carries the uninstaller, a read-only
+machine check, and a `LEIA-ME.txt` in Portuguese.
+[All releases and full notes](https://github.com/rptmatrox/Behringer-BCD-driver-win11-64x/releases/latest).
+
+**Read these four lines before you install — they are the ones that surprise people:**
+
+- **Windows 11, 64-bit, is required.** Microsoft's documentation states that Windows MIDI
+  Services requires Windows 11. See [Windows 10](#windows-10) for what that means for the
+  audio half.
+- **Windows will warn you that it does not recognise the program.** The binaries are not code
+  signed, because a certificate costs money this project does not have. Click *More info* →
+  *Run anyway* — or read and build the source yourself, which is all here.
+- **One manual step remains: Zadig**, which binds the device to WinUSB. The installer explains
+  it when the moment comes.
+- **Some Windows 11 builds carry a defect Microsoft has acknowledged**
+  ([microsoft/MIDI #1047](https://github.com/microsoft/MIDI/issues/1047)): on those, only the
+  **first** virtual MIDI port created after a restart works. **Restarting the machine always
+  clears it.** The installer detects this and tells you; there is nothing for you to install,
+  and the fix arrives through Windows Update.
+
+Prefer to build it yourself? See [Building it](#building-it).
+
+---
+
 ## Why this exists
 
 The BCD3000 is a DJ controller from 2005 and its official Windows driver is from **2010**.
