@@ -13,6 +13,16 @@ __pycache__/
 poc/build/
 poc/dist/
 poc/*.spec
+# ...except this one. A .spec that PyInstaller generated from a command line is
+# derived and belongs in this list; BCD3000Bridge.spec stopped being that on
+# 2026-08-01. It now carries BcdMidi.dll and Microsoft's Windows.Devices.Midi2.dll
+# into the package, and a build without them produces a bridge whose MIDI port
+# never appears. That is source, and it is versioned.
+!poc/BCD3000Bridge.spec
+
+# The probe from Task 2 builds here (native/bcdmidi/pyloadtest.spec).
+native/bcdmidi/build/
+native/bcdmidi/dist/
 
 # Downloads
 native/asiosdk.zip
@@ -46,3 +56,6 @@ Drivers originais/
 # embute o caminho de alguem. A evidencia duravel e o FONTE do arnes, que e
 # versionado, mais o codigo de saida dele.
 installer/verify/final.txt
+
+# Prompt de retomada de sessao. Arquivo de trabalho local, nao do produto.
+RETOMAR.md

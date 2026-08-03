@@ -1,0 +1,42 @@
+# Line endings, pinned to LF in the working tree - and this file exists because its
+# absence was measured, not because it is customary.
+#
+# THE DEFECT IT CLOSES. `core.autocrlf=true` is git's Windows default, and with no
+# .gitattributes anywhere in this repository it rewrote every text file to CRLF on
+# checkout. installer/verify/bcdverify.cpp reads installer/README.md off the disk and
+# looks for "\n## The window\n" and "\n### Modes\n". On a fresh clone those bytes are
+# "\r\n## The window\r\n", both needles miss, and the suite reports
+#
+#     856 checks, 3 failures, VERIFY_FAIL
+#
+# against 856 and 0 from the committed LF blob - 792 CR bytes in that one file. So
+# nobody cloning this repository could reproduce a green suite, and the reason was a
+# file that was not here.
+#
+# THE HARNESS ALSO STOPPED DEPENDING ON THIS. readInstallerReadme() now drops CR as it
+# widens, so the needles are true of the content whatever wrote it to disk. Both halves
+# are deliberate: a check whose verdict depends on the reader's git configuration is
+# reporting the state of a machine rather than the state of the program, and a
+# repository whose sources arrive in a different shape than they were written in is a
+# repository where the standing "ASCII with LF" constraint is not enforceable by anyone
+# who did not set their own git up for it.
+#
+# eol=lf AND NOT eol=crlf: every source in this project is written, measured and
+# committed with LF endings, the build tools are all fine with LF, and the two
+# measurement commands the constraints name - `tr -cd '\r' | wc -c` and
+# `tr -d '\000-\177' | wc -c` - are run against the working tree.
+* text=auto eol=lf
+
+# Anything below is bytes and must never be translated. The PNGs are compared byte for
+# byte between rounds - fifty committed captures whose whole purpose is that a
+# rendering change shows up as a changed file - so a single translated byte in one of
+# them would be a false alarm that costs a round to explain.
+*.png  binary
+*.PNG  binary
+*.ico  binary
+*.exe  binary
+*.dll  binary
+*.sys  binary
+*.res  binary
+*.obj  binary
+*.pdf  binary

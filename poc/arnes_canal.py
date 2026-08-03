@@ -11,8 +11,8 @@ dois casos o contrato entre as linguagens fica sem testemunha.
 
 Aqui o servidor e o `servidor_do_canal()` DE VERDADE, importado do bridge_service, e o
 cliente e o `RelayLink` DE VERDADE, rodando dentro do `tests.exe` no modo arnes
-(`tests.exe rele-cliente <pacotes> <ms>`). O unico substituto e a teVirtualMIDI, que
-e trocada por um GRAVADOR - sem isso nao ha como afirmar O QUE foi injetado, so que
+(`tests.exe rele-cliente <pacotes> <ms>`). O unico substituto e o BcdMidi.dll, que
+e trocado por um GRAVADOR - sem isso nao ha como afirmar O QUE foi injetado, so que
 algo foi.
 
 Roda SEM aparelho e SEM a porta virtual de verdade. Precisa do `tests.exe` compilado.
@@ -54,20 +54,24 @@ def check(cond, o_que):
         _falhas += 1
         print(f"  FALHA: {o_que}")
 
-class TevmGravador:
-    """Grava o que seria injetado na porta virtual, em vez de injetar."""
+class BcdMidiGravador:
+    """Grava o que seria injetado na porta virtual, em vez de injetar.
+
+    Este arnes nunca chama criar_porta()/abrir_porta_uma_vez() - so
+    injetar_pacote() (que chama bcdmidi.BcdMidiSend diretamente) - entao,
+    diferente do arnes_invariante, nao ha necessidade de simular
+    BcdMidiCreatePort aqui: a classe antiga (TevmGravador) tinha um metodo e
+    um contador de criacoes que main() nunca lia, codigo morto que so
+    confundiria sobre o que este arnes realmente exercita.
+    """
     def __init__(self):
         self.injetados = []
-        self.criadas = 0
         self.fechadas = 0
-    def virtualMIDICreatePortEx2(self, nome, cb, inst, tam, flags):
-        self.criadas += 1
-        return 0xBEEF
-    def virtualMIDIClosePort(self, p):
+    def BcdMidiClosePort(self, p):
         self.fechadas += 1
-    def virtualMIDISendData(self, port, arr, tam):
+    def BcdMidiSend(self, port, arr, tam):
         self.injetados.append(bytes(bytearray(arr[:tam])))
-        return True
+        return 1     # BcdMidiSend devolve int (nao-zero em sucesso), nao BOOL
 
 def nome_do_canal_existe():
     """True se ja ha um servidor com o nome real do canal.
@@ -95,9 +99,9 @@ def constantes_do_header():
             "buf_leitura": inteiro("kRelayReadBufBytes")}
 
 def entregar_led(msg):
-    """Chama o callback REAL da porta virtual, como a teVirtualMIDI o chamaria."""
+    """Chama o callback REAL da porta virtual, como o BcdMidi.dll o chamaria."""
     arr = (C.c_ubyte * len(msg)).from_buffer_copy(msg)
-    bs.rx_callback(None, arr, len(msg), None)
+    bs.rx_callback(None, arr, len(msg))    # TRES argumentos - BcdMidiRecvCb, nao mais quatro
 
 def main():
     print("== arnes do canal (C++ <-> Python) ==")
@@ -135,8 +139,20 @@ def main():
           "buffer do pipe multiplo do pacote")
 
     # ---- 2. o filtro do caminho unico, direto ----
-    grav = TevmGravador()
-    bs.tevm = grav
+    # GUARDA antes da substituicao: se bridge_service.py renomear 'bcdmidi' de
+    # novo sem que este arnes acompanhe, `bs.bcdmidi = grav` abaixo viraria um
+    # NO-OP SILENCIOSO - criaria um atributo novo no modulo em vez de
+    # substituir o que injetar_pacote() de fato chama - e o `port_atual`
+    # FABRICADO duas linhas abaixo seria entregue a DLL REAL. Foi exatamente
+    # isso que aconteceu quando a Tarefa 4 trocou `tevm` por `bcdmidi`: a
+    # linha antiga `bs.tevm = grav` continuava rodando sem erro nenhum, so que
+    # sem efeito, e bs.injetar_pacote() teria chamado bcdmidi.BcdMidiSend com
+    # um ponteiro de porta que nao existe.
+    assert hasattr(bs, "bcdmidi"), (
+        "bridge_service.py nao tem mais o atributo 'bcdmidi' - este arnes "
+        "esta desatualizado e a substituicao seria um no-op silencioso")
+    grav = BcdMidiGravador()
+    bs.bcdmidi = grav
     bs.port_atual = C.c_void_p(0xBEEF)
     n0 = len(grav.injetados)
     check(bs.injetar_pacote(b"\x09\x90\x40\x7F") and

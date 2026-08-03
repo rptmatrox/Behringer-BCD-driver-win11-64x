@@ -1,10 +1,17 @@
 #include "common.h"
 
 #include <shlobj.h>
+// WIN32_LEAN_AND_MEAN keeps windows.h from pulling this in, and shlobj.h does not
+// bring it either. ShellExecuteW is the bottom rung of the fallback ladder.
+#include <shellapi.h>
 #include <objbase.h>
 #include <setupapi.h>
 #include <tlhelp32.h>
 #include <sddl.h>
+// GetFileVersionInfoW / VerQueryValueW / VS_FIXEDFILEINFO. WIN32_LEAN_AND_MEAN
+// keeps windows.h from bringing this one, and version.lib is on the link line of
+// build.bat and of verify\buildharness.bat - both, or the harness stops linking.
+#include <winver.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -29,16 +36,117 @@ const wchar_t* const kBridgeExeFileName = L"BCD3000Bridge.exe";
 const wchar_t* const kShortcutFileName  = L"BCD3000 Bridge.lnk";
 const wchar_t* const kLogFileName       = L"install.log";
 
-const wchar_t* const kTeVmDllName       = L"teVirtualMIDI64.dll";
-const wchar_t* const kTeVmDownloadPage  = L"https://www.tobias-erichsen.de/software/loopMIDI.html";
 const wchar_t* const kZadigDownloadPage = L"https://zadig.akeo.ie/";
+
+// Windows MIDI Services - see the block over WinMidiInfo in common.h.
+const wchar_t* const kMidiServiceName      = L"midisrv";
+const wchar_t* const kMidiServiceExeName   = L"midisrv.exe";
+const wchar_t* const kMidiTransportDllName = L"Midi2.VirtualMidiTransport.dll";
+
+// *** THE ONE PLACE THAT CHANGES WHEN MICROSOFT SHIPS THE FIX FOR
+//     microsoft/MIDI ISSUE #1047. *** The full reasoning, including the
+// measurement that makes this a range instead of the issue title's two literal
+// builds, is in the block over KnownBadMidiBuild in common.h. Read it before
+// editing a number here.
+//
+//   26100  the Germanium servicing branch. What midisrv.exe on the owner's own
+//          machine reports even though Windows brands itself 26200 - measured
+//          2026-08-02, and the reason this row exists at all.
+//   26200  the same revision under the 24H2/25H2 enablement branding, which is
+//          how the issue's own title spells the second one. Nobody on this
+//          project has a machine whose binaries carry it; kept because the
+//          issue names it and a missing row is a silent "not affected".
+const KnownBadMidiBuild kKnownBadMidiBuilds[] = {
+    //  build   first bad (KB5101650)   first fixed (0 = no fix has shipped)
+    {   26100,  8875,                   0 },
+    {   26200,  8875,                   0 }
+};
+const int kKnownBadMidiBuildCount =
+    (int)(sizeof(kKnownBadMidiBuilds) / sizeof(kKnownBadMidiBuilds[0]));
+
+bool midiBuildIsKnownBadIn(const KnownBadMidiBuild* table, int count,
+                           DWORD build, DWORD revision)
+{
+    if (!table)
+        return false;
+    for (int i = 0; i < count; i++) {
+        const KnownBadMidiBuild* b = &table[i];
+        if (b->build != build)
+            continue;                       // a branch nobody has reported
+        if (revision < b->firstBadRevision)
+            return false;                   // older than KB5101650
+        // 0 means no fix has shipped, so the range stays open at the top. This is
+        // the branch that decides the answer on the owner's own machine: it is at
+        // .8972, past .8875, and the defect still reproduces there.
+        if (b->firstFixedRevision != 0 && revision >= b->firstFixedRevision)
+            return false;                   // Microsoft shipped the fix
+        return true;
+    }
+    return false;
+}
+
+bool midiBuildIsKnownBad(DWORD build, DWORD revision)
+{
+    return midiBuildIsKnownBadIn(kKnownBadMidiBuilds, kKnownBadMidiBuildCount,
+                                 build, revision);
+}
 
 const wchar_t* const kUsbEnumKey =
     L"SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_1397&PID_00BF&MI_00";
 
-// The control service loads the third party library from this literal path.
-// Keep it equal to the string in poc/bridge_service.py.
-static const wchar_t* const kTeVmHardCodedPath = L"C:\\Windows\\System32\\teVirtualMIDI64.dll";
+// The same path, split, so that the device's other functions can be looked at. The
+// harness rebuilds the line above out of these two and refuses to pass if they have
+// drifted apart.
+const wchar_t* const kUsbEnumParentKey =
+    L"SYSTEM\\CurrentControlSet\\Enum\\USB";
+const wchar_t* const kUsbFunctionPrefix = L"VID_1397&PID_00BF&MI_";
+
+// ---------------------------------------------------------------------------
+// THE TWO MIXERS, AS VALUES A SCREEN CAN OFFER. See the block over these in
+// common.h for why they are re-declared here instead of read out of
+// native\bcdasio\usbdev.h, and for what installer\verify asserts them against.
+//
+// The order is the driver's kProfiles order, and the harness checks that too: an
+// index is only meaningful if both tables mean the same thing by it.
+//
+// *** THE BCD2000's FLAG IS false AND THAT IS A FACT, NOT A HEDGE ABOUT A FACT. ***
+// usbdev.cpp's own comment on that profile says it in words: EXPERIMENTAL, NUNCA
+// RODOU, NINGUEM DESTE PROJETO TEM UMA. Every field of that profile but the vendor
+// and product ids is a guess inherited from the BCD3000, each with a clean failure
+// path. The screen that offers the choice says the true thing rather than the
+// encouraging one, and the check that ties the two together is in installer\verify.
+// ---------------------------------------------------------------------------
+static const wchar_t* const kModelNames[kModelCount] = { L"BCD3000", L"BCD2000" };
+static const unsigned short kModelVids[kModelCount]  = { 0x1397, 0x1397 };
+static const unsigned short kModelPids[kModelCount]  = { 0x00BF, 0x00BD };
+static const bool           kModelProven[kModelCount] = { true, false };
+
+static bool modelIndexOk(int index)
+{
+    return index >= 0 && index < kModelCount;
+}
+
+const wchar_t* modelName(int index)
+{
+    return modelIndexOk(index) ? kModelNames[index] : 0;
+}
+
+unsigned short modelVid(int index)
+{
+    return modelIndexOk(index) ? kModelVids[index] : (unsigned short)0;
+}
+
+unsigned short modelPid(int index)
+{
+    return modelIndexOk(index) ? kModelPids[index] : (unsigned short)0;
+}
+
+// An index this table does not have is NOT proven, which is the answer that promises
+// least. A default of true would make a bad index look like validated hardware.
+bool modelProvenOnHardware(int index)
+{
+    return modelIndexOk(index) ? kModelProven[index] : false;
+}
 
 // ---------------------------------------------------------------------------
 // Output
@@ -54,6 +162,7 @@ static AskHook  g_askHook     = 0;
 static bool     g_consoleEcho = true;
 
 void setLineSink(LineSink sink)   { g_sink = sink; }
+LineSink lineSink()               { return g_sink; }
 void setAskHook(AskHook hook)     { g_askHook = hook; }
 void setConsoleEcho(bool on)      { g_consoleEcho = on; }
 
@@ -190,6 +299,11 @@ void logClose()
     }
 }
 
+bool logIsOpen()
+{
+    return g_log != INVALID_HANDLE_VALUE;
+}
+
 const wchar_t* winErrText(DWORD err)
 {
     static wchar_t buf[512];
@@ -271,6 +385,12 @@ bool askYesNo(const wchar_t* question)
 // answer.
 static HANDLE g_interactiveToken      = 0;
 static bool   g_interactiveTokenTried = false;
+// WHICH of the two opens below succeeded. The weaker one answers "who owns the
+// desktop" and nothing else; only the stronger one can be duplicated into the
+// primary token CreateProcessWithTokenW takes. Recorded here rather than worked out
+// again later, because "the token exists" and "the token can launch" are two
+// different facts and collapsing them is how a page offers what it cannot do.
+static bool   g_interactiveTokenFull  = false;
 
 static HANDLE interactiveUserToken()
 {
@@ -304,11 +424,15 @@ static HANDLE interactiveUserToken()
             // alone is enough to read the account, so it is tried as a fallback:
             // a token that only answers "who" is still better than none.
             HANDLE t = 0;
-            if (!OpenProcessToken(p, TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE, &t))
+            bool   full = true;
+            if (!OpenProcessToken(p, TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE, &t)) {
+                full = false;
                 OpenProcessToken(p, TOKEN_QUERY, &t);
+            }
             CloseHandle(p);
             if (t) {
-                g_interactiveToken = t;
+                g_interactiveToken     = t;
+                g_interactiveTokenFull = full;
                 break;
             }
         } while (Process32NextW(snap, &pe));
@@ -991,57 +1115,224 @@ void detectAsioRegistration(AsioRegInfo* out)
     out->perUserShadowPresent = regKeyExists(HKEY_CURRENT_USER, shadow);
 }
 
-void detectTeVirtualMidi(TeVmInfo* out)
+// Is the kernel driver registered with the Service Control Manager under that name?
+//
+// *** IT ASKS WHETHER THE SERVICE EXISTS AND NOTHING ELSE, WHICH IS THE WHOLE POINT
+//     OF THE ACCESS MASK. *** SC_MANAGER_CONNECT and SERVICE_QUERY_STATUS are the
+// cheapest rights that let OpenServiceW distinguish "there is such a service" from
+// ERROR_SERVICE_DOES_NOT_EXIST, and both are granted to an ordinary user: measured
+// unelevated, the whole call costs 1.0-1.2 ms and the negative - a name that cannot
+// exist - comes back as a null handle with GetLastError()==1060.
+//
+// Nothing here starts, stops or configures anything, and nothing here loads a byte
+// of anybody's library.
+bool serviceIsRegistered(const wchar_t* serviceName)
+{
+    if (!serviceName || !serviceName[0])
+        return false;
+    SC_HANDLE scm = OpenSCManagerW(0, 0, SC_MANAGER_CONNECT);
+    if (!scm)
+        return false;
+    SC_HANDLE svc = OpenServiceW(scm, serviceName, SERVICE_QUERY_STATUS);
+    bool found = (svc != 0);
+    if (svc)
+        CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return found;
+}
+
+// ---------------------------------------------------------------------------
+// A FILE'S VERSION RESOURCE, AS FOUR NUMBERS.
+//
+// *** THIS IS A READ OF A RESOURCE SECTION AND NOT A LOAD OF A MODULE. ***
+// GetFileVersionInfoSizeW/GetFileVersionInfoW map the file's resources; they do
+// not run DllMain, do not resolve imports and do not put the file in this
+// process's module list. That distinction is the whole reason this program is
+// allowed to ask about Microsoft's MIDI transport at all: it never gets loaded,
+// never gets called, and no port is created to find anything out.
+//
+// *** AND IT READS VS_FIXEDFILEINFO AND NOT THE "FileVersion" STRING. *** The
+// string is localised - on the owner's machine the file's descriptions come
+// back in Portuguese - and is free-form, so parsing it would be parsing a
+// translation. The fixed block is four binary numbers with no language on them.
+// ---------------------------------------------------------------------------
+bool fileVersionNumbers(const wchar_t* path, DWORD out[4], DWORD* winErr)
+{
+    if (winErr)
+        *winErr = 0;
+    if (out) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+    }
+    if (!path || !path[0] || !out) {
+        if (winErr)
+            *winErr = ERROR_INVALID_PARAMETER;
+        return false;
+    }
+
+    DWORD handle = 0;
+    DWORD size   = GetFileVersionInfoSizeW(path, &handle);
+    if (size == 0) {
+        if (winErr)
+            *winErr = GetLastError();
+        return false;
+    }
+
+    // Heap rather than a fixed buffer: the size is whatever the file says, and a
+    // stack array big enough for every file is a guess this does not have to make.
+    void* buf = HeapAlloc(GetProcessHeap(), 0, size);
+    if (!buf) {
+        if (winErr)
+            *winErr = ERROR_NOT_ENOUGH_MEMORY;
+        return false;
+    }
+
+    bool ok = false;
+    if (GetFileVersionInfoW(path, 0, size, buf)) {
+        VS_FIXEDFILEINFO* fixed = 0;
+        UINT              len   = 0;
+        if (VerQueryValueW(buf, L"\\", (LPVOID*)&fixed, &len) &&
+            fixed && len >= sizeof(VS_FIXEDFILEINFO) &&
+            fixed->dwSignature == 0xFEEF04BD) {
+            out[0] = HIWORD(fixed->dwFileVersionMS);
+            out[1] = LOWORD(fixed->dwFileVersionMS);
+            out[2] = HIWORD(fixed->dwFileVersionLS);
+            out[3] = LOWORD(fixed->dwFileVersionLS);
+            ok = true;
+        } else if (winErr) {
+            *winErr = ERROR_RESOURCE_TYPE_NOT_FOUND;
+        }
+    } else if (winErr) {
+        *winErr = GetLastError();
+    }
+    HeapFree(GetProcessHeap(), 0, buf);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT WINDOWS MIDI SERVICES LOOKS LIKE ON THIS MACHINE.
+//
+// Three reads, all of them cheap and none of them a port. See the block over
+// WinMidiInfo in common.h for why it is exactly these three and why creating a
+// port to be sure is forbidden rather than merely avoided.
+//
+// *** WHY THE BUILD COMES OFF midisrv.exe AND NOT OFF THE TRANSPORT DLL. ***
+// The brief for this work named the transport DLL's file version as the reading,
+// and on the owner's machine on 2026-08-02 that version is 1.0.15.0 - the
+// Windows MIDI Services COMPONENT version, which cannot be compared with the
+// 26100.8875 the issue's own title names. midisrv.exe, in the same directory
+// and from the same update, reports 10.0.26100.8972: major.minor.BUILD.REVISION,
+// which is the shape the known-bad list is written in. So BOTH are read - the
+// transport DLL because it is the file the defect lives in and the file whose
+// presence proves the stack is there at all, and the service binary because it
+// is the one that carries the build the defect is indexed by.
+//
+// *** AND NOT THE REGISTRY'S UBR EITHER. *** HKLM's CurrentBuild/UBR said
+// 26200.8973 on the same machine and the same minute that midisrv.exe said
+// 26100.8972. Those are different numbers about different things: the registry
+// describes the image's branding, the binary describes the binary. The defect
+// is in a binary, so the binary is asked.
+// ---------------------------------------------------------------------------
+void detectWindowsMidi(WinMidiInfo* out)
 {
     ZeroMemory(out, sizeof(*out));
+
+    out->serviceRegistered = serviceIsRegistered(kMidiServiceName);
 
     wchar_t sysDir[MAX_PATH];
     sysDir[0] = 0;
-    if (GetSystemDirectoryW(sysDir, MAX_PATH) > 0)
-        joinPath(out->systemDirPath, kPathMax, sysDir, kTeVmDllName);
-    wcsncpy(out->hardCodedPath, kTeVmHardCodedPath, kPathMax - 1);
-    out->hardCodedPath[kPathMax - 1] = 0;
-
-    bool inSysDir    = out->systemDirPath[0] != 0 && fileExists(out->systemDirPath);
-    bool inHardCoded = fileExists(out->hardCodedPath);
-
-    if (inHardCoded)
-        out->state = kTeVmPresent;
-    else if (inSysDir)
-        out->state = kTeVmNotWhereTheServiceLooks;
-    else
-        out->state = kTeVmMissing;
-}
-
-void detectWinUsbBinding(WinUsbInfo* out)
-{
-    ZeroMemory(out, sizeof(*out));
-
-    HKEY root;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kUsbEnumKey, 0, KEY_READ, &root) != ERROR_SUCCESS) {
+    if (GetSystemDirectoryW(sysDir, MAX_PATH) == 0 || sysDir[0] == 0) {
         out->lastError = GetLastError();
         return;
     }
-    out->enumKeyPresent = true;
+
+    wchar_t transport[kPathMax];
+    if (joinPath(transport, kPathMax, sysDir, kMidiTransportDllName)) {
+        out->transportPresent = fileExists(transport);
+        if (out->transportPresent) {
+            DWORD err = 0;
+            out->transportVersionRead =
+                fileVersionNumbers(transport, out->transportVersion, &err);
+            if (!out->transportVersionRead && out->lastError == 0)
+                out->lastError = err;
+        }
+    }
+
+    wchar_t svcExe[kPathMax];
+    if (joinPath(svcExe, kPathMax, sysDir, kMidiServiceExeName)) {
+        DWORD err = 0;
+        out->serviceVersionRead =
+            fileVersionNumbers(svcExe, out->serviceVersion, &err);
+        if (!out->serviceVersionRead && out->lastError == 0)
+            out->lastError = err;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// THE THREE STATES, AND WHY THE THIRD ONE IS "ANYTHING ELSE" RATHER THAN A LIST.
+//
+// kWinMidiReady and kWinMidiKnownBad both require the WHOLE reading: the service
+// registered, the transport file there, and a build number that was actually
+// read. Every other combination - including "everything is there but the version
+// resource would not answer" - is kWinMidiUnread, which prints the numbers and
+// states no cause. That is deliberate: a partial reading dressed up as a verdict
+// is the defect class this program keeps removing from its own text.
+// ---------------------------------------------------------------------------
+WinMidiState classifyWindowsMidi(const WinMidiInfo* w)
+{
+    if (!w || !w->serviceRegistered || !w->transportPresent ||
+        !w->transportVersionRead || !w->serviceVersionRead)
+        return kWinMidiUnread;
+    return midiBuildIsKnownBad(w->serviceVersion[2], w->serviceVersion[3])
+               ? kWinMidiKnownBad
+               : kWinMidiReady;
+}
+
+// Does ONE function key of the device carry a WinUSB interface guid on any of the
+// ports it has been plugged into?
+//
+// *** ONE FUNCTION FOR BOTH QUESTIONS, AND THAT IS A CORRECTNESS PROPERTY. *** The
+// check on MI_00 and the search over its siblings have to ask exactly the same
+// question. A sibling search that accepted less than the binding check accepts would
+// tell somebody "you bound interface 1" on the strength of a test interface 0 would
+// have failed - and the action that sentence produces is another run of Zadig, which
+// is the one operation in this whole process that can leave the hardware unusable.
+//
+// guidOut may be null, which is what the sibling search passes: it wants to know
+// WHETHER, not WHICH.
+static bool functionHasInterfaceGuid(const wchar_t* functionKey, wchar_t* guidOut,
+                                     DWORD guidCap)
+{
+    HKEY root;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, functionKey, 0, KEY_READ, &root)
+            != ERROR_SUCCESS)
+        return false;
 
     // The device leaves one subkey per USB port it has been plugged into, and
     // only the ones bound to WinUSB carry the interface guid. Any one of them is
     // enough: the guid is a property of the binding, not of the port.
-    for (DWORD i = 0; !out->guidPresent; i++) {
+    bool found = false;
+    for (DWORD i = 0; !found; i++) {
         wchar_t sub[256];
         DWORD   subLen = 256;
         if (RegEnumKeyExW(root, i, sub, &subLen, 0, 0, 0, 0) != ERROR_SUCCESS)
             break;
 
+        // *** %.512s AND %.128s RATHER THAN %s, AND THE REASON IS THE RULE THIS
+        // PROJECT WROTE AFTER kStageBadGuid. *** `sub` is a key NAME read out of
+        // HKLM, which is editable by an administrator, so it is input from OUTSIDE
+        // this program - and input from outside is bounded IN THE FORMAT STRING, at
+        // the point of use, not by whoever happened to call this. Neither piece can
+        // reach kPathMax on its own and neither can push the other out.
         wchar_t paramKey[kPathMax];
-        _snwprintf(paramKey, kPathMax - 1, L"%s\\%s\\Device Parameters", kUsbEnumKey, sub);
+        _snwprintf(paramKey, kPathMax - 1, L"%.512s\\%.128s\\Device Parameters",
+                   functionKey, sub);
         paramKey[kPathMax - 1] = 0;
 
         // Same two value names, in the same order, that native/bcdasio/usbdev.cpp
         // looks for.
         static const wchar_t* const names[2] = { L"DeviceInterfaceGUIDs",
                                                  L"DeviceInterfaceGUID" };
-        for (int n = 0; n < 2 && !out->guidPresent; n++) {
+        for (int n = 0; n < 2 && !found; n++) {
             // 512 characters, to match the char val[512] that
             // native/bcdasio/usbdev.cpp reads the same value into. A buffer
             // smaller than the driver's turns a value in between the two sizes
@@ -1051,16 +1342,112 @@ void detectWinUsbBinding(WinUsbInfo* out)
             wchar_t value[512];
             value[0] = 0;
             if (readRegString(HKEY_LOCAL_MACHINE, paramKey, names[n], value, 512)) {
-                wcsncpy(out->guid, value, 63);
-                out->guid[63] = 0;
-                out->guidPresent = true;
+                if (guidOut && guidCap > 0) {
+                    wcsncpy(guidOut, value, guidCap - 1);
+                    guidOut[guidCap - 1] = 0;
+                }
+                found = true;
             }
         }
     }
     RegCloseKey(root);
+    return found;
+}
 
-    if (!out->guidPresent)
+static int hexDigit(wchar_t c)
+{
+    if (c >= L'0' && c <= L'9') return (int)(c - L'0');
+    if (c >= L'a' && c <= L'f') return 10 + (int)(c - L'a');
+    if (c >= L'A' && c <= L'F') return 10 + (int)(c - L'A');
+    return -1;
+}
+
+// WHICH OTHER FUNCTION OF THIS DEVICE WAS BOUND, or -1 when none was.
+//
+// The composite device publishes one Enum\USB key per function - MI_00, MI_01 - and
+// Zadig's list shows one line per function. Picking the wrong line binds the wrong
+// key, and the symptom is identical to never having run Zadig at all: MI_00 has no
+// guid. This is what separates them.
+//
+// READ ONLY, like everything gatherMachineState() reaches. It opens keys for reading,
+// enumerates names and reads values; nothing here writes, and nothing here touches a
+// device.
+//
+// THE FUNCTION NUMBER NEVER LEAVES THIS FUNCTION AS TEXT. What the page eventually
+// prints is the int returned here, so no byte read out of the registry reaches a
+// sentence - which is a stronger position than sanitising one, and it is available
+// because the only thing wanted from the key name is a number.
+//
+// THE LOWEST MATCH WINS, so the answer does not depend on the order the registry
+// happens to enumerate in. Two bound siblings is not a state anybody has produced,
+// but "whichever came first" would be a page that says different things on two runs
+// of the same machine.
+static int siblingFunctionWithGuid()
+{
+    HKEY parent;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kUsbEnumParentKey, 0, KEY_READ, &parent)
+            != ERROR_SUCCESS)
+        return -1;
+
+    const size_t prefixLen = wcslen(kUsbFunctionPrefix);
+    int best = -1;
+    for (DWORD i = 0; ; i++) {
+        wchar_t name[256];
+        DWORD   nameLen = 256;
+        if (RegEnumKeyExW(parent, i, name, &nameLen, 0, 0, 0, 0) != ERROR_SUCCESS)
+            break;
+        if (_wcsnicmp(name, kUsbFunctionPrefix, prefixLen) != 0)
+            continue;
+
+        // EXACTLY two hex digits and then the end of the name. Both halves matter:
+        // a prefix test alone would accept VID_1397&PID_00BF&MI_00_SOMETHING, and a
+        // key somebody can create is not a key to draw a conclusion from.
+        const wchar_t* d = name + prefixLen;
+        int fn = 0, digits = 0;
+        while (digits < 2 && hexDigit(d[digits]) >= 0) {
+            fn = fn * 16 + hexDigit(d[digits]);
+            digits++;
+        }
+        if (digits != 2 || d[2] != 0)
+            continue;
+        // Function 0 is the one the caller has already answered for. Finding a guid
+        // on it here would contradict guidPresent being false.
+        if (fn == 0)
+            continue;
+        if (best >= 0 && fn >= best)
+            continue;
+
+        wchar_t key[kPathMax];
+        _snwprintf(key, kPathMax - 1, L"%.512s\\%.128s", kUsbEnumParentKey, name);
+        key[kPathMax - 1] = 0;
+        if (functionHasInterfaceGuid(key, 0, 0))
+            best = fn;
+    }
+    RegCloseKey(parent);
+    return best;
+}
+
+void detectWinUsbBinding(WinUsbInfo* out)
+{
+    ZeroMemory(out, sizeof(*out));
+    // NOT the zero ZeroMemory just wrote, and the difference is the whole point of
+    // the field: see the block on it in common.h.
+    out->guidOnOtherFunction = -1;
+
+    HKEY root;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kUsbEnumKey, 0, KEY_READ, &root) != ERROR_SUCCESS) {
+        out->lastError = GetLastError();
         return;
+    }
+    RegCloseKey(root);
+    out->enumKeyPresent = true;
+
+    out->guidPresent = functionHasInterfaceGuid(kUsbEnumKey, out->guid, 64);
+
+    if (!out->guidPresent) {
+        out->guidOnOtherFunction = siblingFunctionWithGuid();
+        return;
+    }
 
     // Enumeration only. It asks the system which interfaces are present and
     // never opens the device, so it cannot take the device away from whoever is
@@ -1220,6 +1607,339 @@ void detectInteractiveAccount(AccountInfo* out)
     HeapFree(GetProcessHeap(), 0, mine);
 }
 
+// Which Windows this is. See the block over OsInfo in common.h for why
+// GetVersionEx is honest in this build and why the manifest is not touched.
+//
+// THE DEPRECATION IS DELIBERATE AND SUPPRESSED IN ONE PLACE ONLY. Windows marks
+// GetVersionExW deprecated to push callers at the VersionHelpers macros, and those
+// answer "is it at least X" - which cannot distinguish Windows 10 from Windows 11,
+// because IsWindows10OrGreater() is true on both. This function needs the build
+// number, so it asks for it, and the pragma is around this call and nothing else.
+void detectWindowsVersion(OsInfo* out)
+{
+    ZeroMemory(out, sizeof(*out));
+
+    OSVERSIONINFOEXW vi;
+    ZeroMemory(&vi, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+#pragma warning(push)
+#pragma warning(disable : 4996)
+    if (!GetVersionExW((OSVERSIONINFOW*)&vi))
+        return;
+#pragma warning(pop)
+
+    out->read  = true;
+    out->major = vi.dwMajorVersion;
+    out->minor = vi.dwMinorVersion;
+    out->build = vi.dwBuildNumber;
+    out->isWindows10 = (vi.dwMajorVersion == 10 && vi.dwMinorVersion == 0 &&
+                        vi.dwBuildNumber < kFirstWindows11Build);
+}
+
+// ---------------------------------------------------------------------------
+// WINGET, AND LAUNCHING SOMEBODY ELSE'S INSTALLER WITHOUT SPEAKING FOR THEM
+//
+// Everything in this block is read only except launchUnelevated(), which starts a
+// process and nothing else: it writes no file, touches no registry key and installs
+// nothing itself. What it installs is decided entirely by the command line it is
+// handed, and there is exactly one builder for that - see the comments in common.h,
+// which carry the reasoning this block only implements.
+// ---------------------------------------------------------------------------
+
+bool interactiveTokenCanLaunch()
+{
+    return interactiveUserToken() != 0 && g_interactiveTokenFull;
+}
+
+// *** FIX ROUND 1: buildWingetInstallCommand() STOOD HERE AND IS DELETED, BECAUSE
+//     NOTHING IN THIS PROGRAM OR IN THE REST OF THIS PLAN CALLS IT. ***
+//
+// It built "winget.exe install --id <id> --source winget --exact" and its whole
+// point was the flags it refused to write: --silent, /quiet, /silent, -h,
+// --disable-interactivity, --accept-package-agreements, --accept-source-agreements.
+// The harness asserted that refusal on the string it returned rather than on the
+// bytes of the built exe, for a reason worth keeping in the record even though the
+// function is gone: an absence check over a binary goes green the moment a flag is
+// ASSEMBLED instead of written - L"--" L"silent", a swprintf, a resource string -
+// so it would have passed for exactly the refactor it existed to stop.
+//
+// *** WHY IT GOES RATHER THAN STAYS, STATED OUT LOUD BECAUSE THE SPEC REQUIRES THE
+//     CHOICE TO BE MADE AND NOT DRIFTED INTO. *** Its sole production caller was
+// the MIDI port screen's accelerated offer, removed with the third party detection
+// it was built on. Its sibling serviceIsRegistered() was KEPT in the same round on
+// a named ground - Task 6 detects Windows MIDI Services by asking the SCM about the
+// midisrv service, so that primitive has a reader coming. This one has none: Task 6
+// "stops telling the user to install anything", and Task 7 ships its payload
+// embedded in this installer rather than through a package manager. There is no
+// task left in this plan that would call it, so keeping it would be keeping dead
+// code with a story attached - which is the pattern this round deleted
+// kThirdPartyWaitMs for, and it cannot be right to delete one and keep the other.
+//
+// THE CONTRACT ITSELF DOES NOT GO. The standing instruction to any future offer -
+// never suppress the author's own interface, always unelevated in the desktop
+// owner's session - is in common.h over the winget block, where somebody building
+// one will read it before writing a line. What is deleted is an implementation of
+// it that nothing invokes, not the rule.
+
+// How long winget gets to answer "--version". Generous enough for a cold start and
+// short enough that a wedged App Installer cannot wedge this program: the whole
+// point of asking is to decide which of two buttons to offer.
+static const DWORD kWingetProbeMs = 8000;
+
+void detectWinget(WingetInfo* out)
+{
+    ZeroMemory(out, sizeof(*out));
+    out->state = kWingetMissing;
+
+    SECURITY_ATTRIBUTES sa;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength        = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE rd = 0, wr = 0;
+    if (!CreatePipe(&rd, &wr, &sa, 4096)) {
+        out->state     = kWingetBlocked;
+        out->lastError = GetLastError();
+        return;
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb          = sizeof(si);
+    si.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput  = wr;
+    si.hStdError   = wr;
+    si.hStdInput   = GetStdHandle(STD_INPUT_HANDLE);
+
+    // Not "where winget". An execution alias that exists on disk proves nothing
+    // about whether it runs, and one that is missing from this process's PATH
+    // proves nothing about the user's. Running it is the only honest question.
+    wchar_t cmd[64];
+    wcscpy(cmd, L"winget.exe --version");
+
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+    BOOL  ok  = CreateProcessW(0, cmd, 0, 0, TRUE, CREATE_NO_WINDOW, 0, 0, &si, &pi);
+    DWORD err = ok ? 0 : GetLastError();
+    CloseHandle(wr);                       // ours, so the read end can see the end
+    if (!ok) {
+        CloseHandle(rd);
+        out->lastError = err;
+        out->state = (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+                     ? kWingetMissing : kWingetBlocked;
+        return;
+    }
+
+    // The deadline is what makes the 4096 byte pipe safe. "--version" prints one
+    // short line, so it cannot fill the pipe and block - but a build that somehow
+    // printed more would stop rather than hang here, and be reported as blocked.
+    DWORD waited = WaitForSingleObject(pi.hProcess, kWingetProbeMs);
+    if (waited != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 2000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(rd);
+        out->state     = kWingetBlocked;
+        out->lastError = WAIT_TIMEOUT;
+        return;
+    }
+
+    char  raw[256];
+    DWORD got   = 0;
+    DWORD avail = 0;
+    raw[0] = 0;
+    if (PeekNamedPipe(rd, 0, 0, 0, &avail, 0) && avail > 0) {
+        DWORD want = avail < sizeof(raw) - 1 ? avail : (DWORD)(sizeof(raw) - 1);
+        if (!ReadFile(rd, raw, want, &got, 0))
+            got = 0;
+    }
+    raw[got] = 0;
+    CloseHandle(rd);
+
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    // winget prints plain ASCII here ("v1.9.25180"), so the widening is a copy and
+    // not a code page decision. Anything that is not a printable ASCII character is
+    // dropped rather than being carried into a string this program prints.
+    int n = 0;
+    for (DWORD i = 0; i < got && n < 63; i++)
+        if (raw[i] >= 32 && raw[i] < 127)
+            out->version[n++] = (wchar_t)raw[i];
+    out->version[n] = 0;
+    while (n > 0 && out->version[n - 1] == L' ')
+        out->version[--n] = 0;
+
+    out->lastError = code;
+    if (code != 0) {
+        // It is there and it refused. DisableAppInstaller is the usual reason, and
+        // it is a different answer from "not installed" because a different thing
+        // fixes it.
+        out->state = kWingetBlocked;
+        return;
+    }
+    out->state = kWingetUsable;
+    if (!out->version[0])
+        wcscpy(out->version, L"(it answered, but printed no version)");
+}
+
+bool launchUnelevated(const wchar_t* cmdline, DWORD* err, HANDLE* procOut)
+{
+    if (err)
+        *err = 0;
+    if (procOut)
+        *procOut = 0;
+    if (!cmdline || !cmdline[0] || wcslen(cmdline) >= kPathMax) {
+        if (err)
+            *err = ERROR_INVALID_PARAMETER;
+        return false;
+    }
+
+    // REFUSED WHEN THE ACCOUNTS DIFFER, and the reason is the one already written
+    // over detectInteractiveAccount(): an elevated process running as one account
+    // must not act inside another account's session on that account's behalf. The
+    // installer already refuses the per user half in exactly this case. The caller
+    // falls back to opening a page, which asks nobody's identity for anything.
+    AccountInfo who;
+    detectInteractiveAccount(&who);
+    if (!who.checked || !who.matched) {
+        if (err)
+            *err = ERROR_ACCESS_DENIED;
+        return false;
+    }
+
+    HANDLE token = interactiveUserToken();
+    if (!token || !g_interactiveTokenFull) {
+        if (err)
+            *err = ERROR_NO_TOKEN;
+        return false;
+    }
+
+    // CreateProcessWithTokenW takes a PRIMARY token, and the one held here is the
+    // desktop owner's process token opened for query, impersonation and
+    // duplication. MAXIMUM_ALLOWED rather than TOKEN_ALL_ACCESS: the second asks
+    // for rights this process may not be granted on somebody else's token, and
+    // being refused the duplicate is a worse outcome than holding fewer rights.
+    HANDLE primary = 0;
+    if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, 0, SecurityImpersonation,
+                          TokenPrimary, &primary)) {
+        if (err)
+            *err = GetLastError();
+        return false;
+    }
+
+    wchar_t mutableCmd[kPathMax];
+    wcsncpy(mutableCmd, cmdline, kPathMax - 1);
+    mutableCmd[kPathMax - 1] = 0;
+
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    // lpDesktop is deliberately left null, so the child inherits THIS process's
+    // window station and desktop. In the product that is winsta0\default, which is
+    // where the user is. In installer/verify it is the private desktop the harness
+    // moved itself to before creating anything - so even an elevated harness run
+    // cannot put a window on the owner's screen.
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+
+    // LOGON_WITH_PROFILE so the child gets the desktop owner's registry hive. The
+    // environment block is inherited rather than built with CreateEnvironmentBlock,
+    // and that is safe for one measured reason and not by luck: this function has
+    // already refused unless the desktop owner IS the account this process runs as,
+    // so our environment is already that account's.
+    BOOL  ok = CreateProcessWithTokenW(primary, LOGON_WITH_PROFILE, 0, mutableCmd,
+                                       0, 0, 0, &si, &pi);
+    DWORD e  = ok ? 0 : GetLastError();
+    CloseHandle(primary);
+    if (!ok) {
+        // The expected failure when this is called from a process that is NOT
+        // elevated: CreateProcessWithTokenW needs SE_IMPERSONATE_NAME and a
+        // filtered token does not carry it. ERROR_PRIVILEGE_NOT_HELD, 1314.
+        if (err)
+            *err = e;
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    if (procOut)
+        *procOut = pi.hProcess;
+    else
+        CloseHandle(pi.hProcess);
+    return true;
+}
+
+bool isSafeUrlForCommandLine(const wchar_t* url)
+{
+    if (!url)
+        return false;
+    if (_wcsnicmp(url, L"http://", 7) != 0 && _wcsnicmp(url, L"https://", 8) != 0)
+        return false;
+    size_t n = wcslen(url);
+    if (n < 12 || n > 400)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        wchar_t c = url[i];
+        // Printable ASCII only, so nothing outside it can be reinterpreted by a
+        // code page; and none of the characters a command interpreter treats as
+        // punctuation. Every url this program opens is a literal in this file and
+        // passes, which is the state a boundary check should be in.
+        if (c < L'!' || c > L'~')
+            return false;
+        if (c == L'"' || c == L'\'' || c == L'^' || c == L'&' || c == L'|' ||
+            c == L'<' || c == L'>' || c == L'%' || c == L'`')
+            return false;
+    }
+    return true;
+}
+
+bool openPageInBrowser(const wchar_t* url, DWORD* err)
+{
+    if (err)
+        *err = 0;
+    if (!isSafeUrlForCommandLine(url)) {
+        if (err)
+            *err = ERROR_INVALID_PARAMETER;
+        return false;
+    }
+
+    // The unelevated route first, and not for tidiness. A browser started from this
+    // elevated process would inherit our token and run elevated - which is a real
+    // downgrade for the user, not a cosmetic one, and it is the same inheritance
+    // rule that makes launchUnelevated() necessary in the first place. explorer.exe
+    // is the launcher because it hands the address to the shell, which opens it
+    // with whatever the user's default browser is.
+    //
+    // WHAT THIS CANNOT CONFIRM, said rather than implied: that the page opened. It
+    // confirms that a launcher started. Nothing below reports otherwise.
+    if (interactiveTokenCanLaunch()) {
+        wchar_t cmd[kPathMax];
+        _snwprintf(cmd, kPathMax - 1, L"explorer.exe \"%s\"", url);
+        cmd[kPathMax - 1] = 0;
+        DWORD  e = 0;
+        HANDLE p = 0;
+        if (launchUnelevated(cmd, &e, &p)) {
+            if (p)
+                CloseHandle(p);
+            return true;
+        }
+    }
+
+    // No usable token, or the accounts differ. ShellExecuteW still gets the user to
+    // the page; it may open elevated, which is worse than the route above and much
+    // better than no page at all.
+    HINSTANCE r = ShellExecuteW(0, L"open", url, 0, 0, SW_SHOWNORMAL);
+    if ((INT_PTR)r > 32)
+        return true;
+    if (err)
+        *err = (DWORD)(INT_PTR)r;   // ShellExecuteW's own code, not GetLastError
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // The whole machine state, and the report of it
 // ---------------------------------------------------------------------------
@@ -1234,11 +1954,24 @@ void gatherMachineState(MachineState* out)
         shortcutPath(out->shortcutFile, kPathMax);
 
     out->elevated = isElevated();
+    detectWindowsVersion(&out->os);
     detectInteractiveAccount(&out->account);
     detectAsioRegistration(&out->asio);
-    detectTeVirtualMidi(&out->tevm);
     detectWinUsbBinding(&out->usb);
     detectBridge(&out->bridge);
+    // Read only, and no port is created: see the block over detectWindowsMidi().
+    detectWindowsMidi(&out->winMidi);
+
+    // The two facts page 2's offer is made of. Both are measurements, so both live
+    // in the state with the rest of them - see the comment on the fields.
+    //
+    // THIS SPAWNS A PROCESS, and that is stated because "gatherMachineState is read
+    // only" is a promise this folder keeps. It runs "winget --version" with a
+    // deadline: it reads a version and changes nothing, which is the same kind of
+    // act as reading a registry key, and it is the only way to tell an App
+    // Installer that is missing from one that is blocked by policy.
+    detectWinget(&out->winget);
+    out->tokenCanLaunch = interactiveTokenCanLaunch();
 
     if (out->pathsResolved && fileExists(out->shortcutFile)) {
         out->shortcutPresent = true;
@@ -1262,6 +1995,15 @@ void reportMachineState(const MachineState* s)
     sayBlank();
 
     say(L"--- who is running this ---");
+    // The version goes in the report, not only on the page, because the page's
+    // Windows 10 row is absent on Windows 11 and an absent row is indistinguishable
+    // from a check that was never made by anybody reading a support log.
+    if (s->os.read)
+        sayInfo(L"windows : %lu.%lu build %lu%s", (unsigned long)s->os.major,
+                (unsigned long)s->os.minor, (unsigned long)s->os.build,
+                s->os.isWindows10 ? L" (Windows 10)" : L"");
+    else
+        sayWarn(L"windows : the version could not be read");
     sayInfo(L"elevated: %s", s->elevated ? L"yes" : L"no");
     if (s->account.tokenAccount[0])
         sayInfo(L"account : %s", s->account.tokenAccount);
@@ -1328,22 +2070,28 @@ void reportMachineState(const MachineState* s)
     }
     sayBlank();
 
-    say(L"--- 3. teVirtualMIDI (third party, not installed by us) ---");
-    switch (s->tevm.state) {
-    case kTeVmPresent:
-        sayOk(L"found: %s", s->tevm.hardCodedPath);
+    // *** SECTION 3 USED TO REPORT A THIRD PARTY VIRTUAL MIDI DRIVER, AND THAT
+    //     DETECTION IS GONE. *** MachineState no longer carries a reading of any
+    // virtual MIDI backend - this task removed the third party detection without
+    // adding its replacement, which is a later task's job. What is left here is
+    // the generic winget and launch capability reading, kept because a future
+    // screen may still need it.
+    say(L"--- 3. winget and unelevated launch ---");
+    switch (s->winget.state) {
+    case kWingetUsable:
+        sayInfo(L"winget  : %s", s->winget.version);
         break;
-    case kTeVmNotWhereTheServiceLooks:
-        sayFail(L"found at %s but NOT at %s", s->tevm.systemDirPath, s->tevm.hardCodedPath);
-        sayInfo(L"the control service opens that literal path, so it will fail to start");
+    case kWingetBlocked:
+        sayWarn(L"winget  : present and it refused (%s) - probably the "
+                L"DisableAppInstaller policy", winErrText(s->winget.lastError));
         break;
-    case kTeVmMissing:
+    case kWingetMissing:
     default:
-        sayFail(L"%s not found", kTeVmDllName);
-        sayInfo(L"install loopMIDI, which ships teVirtualMIDI: %s", kTeVmDownloadPage);
-        sayInfo(L"we do not redistribute it and this installer will not install it");
+        sayInfo(L"winget  : not available on this machine");
         break;
     }
+    sayInfo(L"launching as the desktop owner, unelevated: %s",
+            s->tokenCanLaunch ? L"available" : L"not available");
     sayBlank();
 
     say(L"--- 4. WinUSB binding on the device ---");
@@ -1354,6 +2102,14 @@ void reportMachineState(const MachineState* s)
     } else if (!s->usb.guidPresent) {
         sayFail(L"the device is known but has no WinUSB interface - the binding is "
                 L"missing on the MI_00 function");
+        // The one thing that separates "Zadig has not been run" from "Zadig was run
+        // on the wrong line". > 0 and not >= 0: see the block on the field in
+        // common.h - 0 is what a zeroed struct carries, and it would contradict the
+        // line above.
+        if (s->usb.guidOnOtherFunction > 0)
+            sayFail(L"but interface %d of the same device IS bound to WinUSB, so the "
+                    L"wrong line of Zadig's list was picked. It has to be interface 0 "
+                    L"(MI_00).", s->usb.guidOnOtherFunction);
     } else {
         sayOk(L"WinUSB interface recorded: %s", s->usb.guid);
         if (s->usb.interfacePresentNow)

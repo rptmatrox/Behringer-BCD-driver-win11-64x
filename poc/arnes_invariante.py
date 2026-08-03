@@ -14,10 +14,10 @@ inteira. Isto aqui e o que se pode verificar sem hardware, das duas formas possi
 
   ESTATICA  - por contagem de pontos de chamada no fonte. E a unica metade que cobre
               caminhos que nao se consegue exercitar sem aparelho (queda de cabo, por
-              exemplo): se `virtualMIDIClosePort` tem UM ponto de chamada e ele esta
+              exemplo): se `BcdMidiClosePort` tem UM ponto de chamada e ele esta
               dentro de `encerrar_porta`, nenhum caminho de execucao pode fechar a
               porta por outra via, tenha ele sido exercitado ou nao.
-  DINAMICA  - rodando o `run()` DE VERDADE, com o aparelho e a teVirtualMIDI
+  DINAMICA  - rodando o `run()` DE VERDADE, com o aparelho e o BcdMidi.dll
               substituidos, duas passagens de bastao simuladas e dois drivers em
               sequencia no canal.
 
@@ -60,20 +60,40 @@ def check(cond, o_que):
         _falhas += 1
         print(f"  FALHA: {o_que}")
 
-class TevmContador:
-    """teVirtualMIDI substituta que CONTA criacoes e fechamentos."""
+class BcdMidiContador:
+    """BcdMidi.dll substituta que CONTA fechamentos e envios.
+
+    NAO simula BcdMidiCreatePort - ver FalsoCriadorDePorta abaixo para o
+    motivo. Este objeto so precisa dos dois metodos que bridge_service.py
+    chama em `bcdmidi.<metodo>(...)` diretamente: BcdMidiClosePort (dentro de
+    encerrar_porta) e BcdMidiSend (dentro de injetar_pacote). Nomes iguais aos
+    da DLL de proposito - e o que a substituicao por atributo
+    (`bs.bcdmidi = ...`) exige para interceptar as chamadas.
+    """
     def __init__(self):
-        self.criadas = 0
         self.fechadas = 0
         self.injetados = []
-    def virtualMIDICreatePortEx2(self, nome, cb, inst, tam, flags):
-        self.criadas += 1
-        return 0xBEEF
-    def virtualMIDIClosePort(self, p):
+    def BcdMidiClosePort(self, p):
         self.fechadas += 1
-    def virtualMIDISendData(self, port, arr, tam):
+    def BcdMidiSend(self, port, arr, tam):
         self.injetados.append(bytes(bytearray(arr[:tam])))
-        return True
+        return 1     # BcdMidiSend devolve int (nao-zero em sucesso), nao BOOL
+
+class FalsoCriadorDePorta:
+    """Substitui bs.criar_porta INTEIRO - nao bs.bcdmidi.BcdMidiCreatePort.
+
+    BcdMidiCreatePort recebe DOIS ponteiros de saida (errOut, hrOut) por
+    C.byref() - reproduzir esse protocolo aqui exigiria mexer em atributos
+    internos do ctypes (CArgObject._obj) so para escrever nos ponteiros, o
+    que e fragil e nao prova nada a mais. bridge_service.py ja isola essa
+    chamada dentro de criar_porta(), que devolve (porta, erro, hr) em tipos
+    Python simples - substituir NESSE nivel e mais simples E mais robusto.
+    """
+    def __init__(self):
+        self.criadas = 0
+    def __call__(self):
+        self.criadas += 1
+        return C.c_void_p(0xBEEF), 0, 0
 
 def nome_do_canal_existe():
     k32 = C.WinDLL("kernel32", use_last_error=True)
@@ -85,7 +105,7 @@ def nome_do_canal_existe():
 
 def entregar_led(msg):
     arr = (C.c_ubyte * len(msg)).from_buffer_copy(msg)
-    bs.rx_callback(None, arr, len(msg), None)
+    bs.rx_callback(None, arr, len(msg))    # TRES argumentos - BcdMidiRecvCb, nao mais quatro
 
 # ---------------------------------------------------------------------------
 def metade_estatica():
@@ -108,17 +128,17 @@ def metade_estatica():
 
     # O que REALMENTE fecha a porta. As linhas de `.argtypes`/`.restype` nao contam
     # porque nao tem parentese logo depois do nome - e por isso o padrao exige um.
-    fecha = linhas_com(r"virtualMIDIClosePort\(")
-    cria  = linhas_com(r"virtualMIDICreatePortEx2\(")
-    check(len(fecha) == 1, f"virtualMIDIClosePort: 1 chamada, achei {len(fecha)}")
-    check(len(cria) == 1, f"virtualMIDICreatePortEx2: 1 chamada, achei {len(cria)}")
+    fecha = linhas_com(r"BcdMidiClosePort\(")
+    cria  = linhas_com(r"BcdMidiCreatePort\(")
+    check(len(fecha) == 1, f"BcdMidiClosePort: 1 chamada, achei {len(fecha)}")
+    check(len(cria) == 1, f"BcdMidiCreatePort: 1 chamada, achei {len(cria)}")
 
     # E a UNICA chamada de fechamento tem de estar DENTRO de encerrar_porta. Sem
     # esta linha, "uma chamada" nao diria de onde.
     def_enc = linhas_com(r"^def encerrar_porta\(")[0]
     proxima_def = min([i for i in linhas_com(r"^def ") if i > def_enc] + [len(linhas)])
     check(def_enc < fecha[0] < proxima_def,
-          "a unica chamada de virtualMIDIClosePort esta dentro de encerrar_porta")
+          "a unica chamada de BcdMidiClosePort esta dentro de encerrar_porta")
 
     # fechar_porta era a funcao que a Tarefa 9 chamava na passagem de bastao. Ela ter
     # DESAPARECIDO e o que garante que nenhum caminho novo a use por engano.
@@ -143,13 +163,33 @@ def metade_estatica():
     fim_laco = finally_run
     trecho = "\n".join(linhas[laco:fim_laco])
     check("criar_porta" not in trecho and "encerrar_porta" not in trecho and
-          "virtualMIDIClosePort" not in trecho,
+          "BcdMidiClosePort" not in trecho,
           "o laco principal (bastao + reconexao de aparelho) nao toca na porta")
 
 # ---------------------------------------------------------------------------
 def metade_dinamica():
-    grav = TevmContador()
-    bs.tevm = grav
+    # GUARDA: se bridge_service.py renomear estes dois nomes de novo sem que
+    # este arnes seja atualizado, a substituicao abaixo (`bs.bcdmidi = ...`,
+    # `bs.criar_porta = ...`) viraria um NO-OP SILENCIOSO - criaria um
+    # atributo NOVO no modulo em vez de substituir o que injetar_pacote() e
+    # criar_porta() realmente chamam, e este arnes acabaria chamando a DLL
+    # REAL com um ponteiro de porta FABRICADO. Foi exatamente isso que
+    # aconteceu quando a Tarefa 4 trocou `tevm` por `bcdmidi`: a linha
+    # `bs.tevm = grav` continuava rodando sem erro nenhum, so que sem efeito
+    # nenhum. Falhar alto aqui, ANTES de qualquer substituicao, e a diferenca
+    # entre um AssertionError com nome e um crash dentro de BcdMidi.dll com um
+    # handle de 0xBEEF.
+    assert hasattr(bs, "bcdmidi"), (
+        "bridge_service.py nao tem mais o atributo 'bcdmidi' - este arnes "
+        "esta desatualizado e a substituicao seria um no-op silencioso")
+    assert hasattr(bs, "criar_porta"), (
+        "bridge_service.py nao tem mais a funcao 'criar_porta' - este arnes "
+        "esta desatualizado")
+
+    grav = BcdMidiContador()
+    bs.bcdmidi = grav
+    criador = FalsoCriadorDePorta()
+    bs.criar_porta = criador
 
     # O aparelho e removido do desenho de proposito: sem isto, um aparelho LIGADO
     # seria ABERTO por este arnes e roubado do BCD3000Bridge.exe do usuario.
@@ -162,9 +202,9 @@ def metade_dinamica():
 
     threading.Thread(target=bs.run, name="run-arnes", daemon=True).start()
     limite = time.monotonic() + 5
-    while grav.criadas == 0 and time.monotonic() < limite:
+    while criador.criadas == 0 and time.monotonic() < limite:
         time.sleep(0.02)
-    check(grav.criadas == 1, f"a porta nasceu UMA vez, criadas={grav.criadas}")
+    check(criador.criadas == 1, f"a porta nasceu UMA vez, criadas={criador.criadas}")
     check(bs.port_atual is not None, "port_atual publicada")
     time.sleep(0.3)     # o servidor do canal sobe num thread daemon do proprio run()
 
@@ -224,9 +264,9 @@ def metade_dinamica():
     # ---- O INVARIANTE, depois de tudo ----
     pedido["vivo"] = False
     time.sleep(0.3)
-    check(grav.criadas == 1,
+    check(criador.criadas == 1,
           f"*** a porta foi criada UMA vez apesar das 2 passagens de bastao e dos 2 "
-          f"drivers: criadas={grav.criadas}")
+          f"drivers: criadas={criador.criadas}")
     check(grav.fechadas == 0,
           f"*** a porta NUNCA foi fechada: fechadas={grav.fechadas}")
 

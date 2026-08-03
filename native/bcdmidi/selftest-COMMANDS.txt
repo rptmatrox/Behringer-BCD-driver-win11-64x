@@ -1,0 +1,211 @@
+TASK 1 SELF-TEST - THE THREE BINARIES, WHAT EACH COSTS, AND WHAT EACH MUST SAY
+==============================================================================
+Written 2026-08-01. Shell: PowerShell. Nothing here needs administrator.
+
+THE BUDGET, FIRST, BECAUSE IT DRIVES EVERYTHING ELSE
+-----------------------------------------------------
+Every one of these three creates ONE virtual MIDI port and closes it. Per
+microsoft/MIDI issue #1047 the machine's MIDI service can stop answering after
+the first virtual port of a boot is closed, and it has been measured on this
+machine that TWO SUCCESSFUL CREATES DO NOT FIT IN ONE BOOT.
+
+  ONE BINARY PER BOOT. Do not try two.
+
+They live side by side and never shadow each other: each self-test is linked
+against its OWN differently-named DLL, so the three can share one directory and
+you pick which one runs by which .exe you start.
+
+  <repo>\native\bcdmidi\runs\
+      selftest-inj-grupos.exe     -> BcdMidi-inj-grupos.dll      (INJECTED)
+      selftest-inj-esconder.exe   -> BcdMidi-inj-esconder.dll    (INJECTED)
+      selftest.exe                -> BcdMidi.dll                 (the good one)
+      Windows.Devices.Midi2.dll, .pri   Microsoft's runtime, shared
+
+The two injected DLLs are NOT in git and must never be. `runs/` is in
+native/bcdmidi/.gitignore for that reason.
+
+The port each one creates is named "BCD3000 SELFTEST" - deliberately NOT
+"BCD3000" - so nothing here can be confused with the product's live port or
+picked up by VirtualDJ's factory mapping.
+
+ORDER: run them 1, 2, 3 as numbered below. Command 1 is the most valuable of
+the three. But if the boots run out, spend the last one on COMMAND 3: it is
+the only one that closes the task; the other two only certify the checks.
+
+
+HOW TO READ ANY OF THE THREE - THE ONE DISTINCTION THAT MATTERS
+----------------------------------------------------------------
+An injection is only proved if THE INJECTED DEFECT is what turned a check red.
+A wedged MIDI service turns the same checks red and proves nothing. That
+mistake was made once already, on 2026-08-01, and nearly banked as evidence.
+
+The self-test prints this line right after the create, always, pass or fail:
+
+    ...create returned port=<ptr> err=0x........ hr=0x........
+
+THAT LINE IS THE DISCRIMINATOR. Read it before anything else.
+
+  port=0000000000000000, err=0x00000003, hr=0x800705B4
+      THE MACHINE ATE THE RUN. 0x800705B4 is HRESULT_FROM_WIN32(ERROR_TIMEOUT):
+      the create waited its full 45 s and the MIDI service never answered.
+      This is defect #1047, not the injection and not our code. The run proves
+      NOTHING, whichever colours follow it. Reboot and run the same binary
+      again as the first MIDI thing of that boot. Do not record a result.
+
+  port=0000000000000000, err=0x00000001 or 0x00000002, hr=0x00000000
+      Service or transport reported absent. Also not the injection. Same
+      response: reboot, re-run, record nothing.
+
+  port=<non-zero>, err=0x00000000, hr=0x00000000
+      The service was healthy and the port was really created. NOW the colours
+      below mean what they say.
+
+A run that says SELFTEST_FAIL for the timeout reason is a wasted boot, not a
+result. A run whose create line is clean is a result even if it is red.
+
+
+COMMAND 1 - the groups injection. THE MOST VALUABLE OF THE THREE.
+------------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest-inj-grupos.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-inj-grupos.txt"
+
+  WHAT IS INJECTED: the two function blocks are put on DIFFERENT groups, 0 and
+  1, instead of both on group 0. One instruction of difference from the good
+  build: `mov byte ptr [rsp+30h],0` becomes `...,1`.
+
+  WHY THIS ONE MATTERS MOST: it is the exact mistake made on 2026-08-01, when
+  the first probe was instructed to use one group per direction and produced a
+  port called 'BCD3000 WMS Gr 2'. If this check does not catch that, it is not
+  worth having.
+
+  MUST GO RED:
+      [FAIL] ...and as OUTPUT, exactly once
+  MUST STAY GREEN:
+      [ ok ] the port was created
+      [ ok ] and BOTH result slots were set to zero on success, not left stale
+      [ ok ] the port is visible to a legacy WinMM app, as INPUT, exactly once
+      [ ok ] after close: the port is gone from WinMM's INPUT list
+  MUST BE SKIPPED, and this is correct rather than a miss:
+      [SKIP] ...and gone from the OUTPUT list
+             NOT MEASURED: the port never appeared in WinMM's OUTPUT list, ...
+
+  THE EVIDENCE LINE, and it is the point of the whole run. In the
+  "--- WinMM after create ---" dump there must be an OUTPUT entry reading
+
+      OUT [n] "BCD3000 SELFTEST Gr 2"
+
+  That literal string, with the suffix, is what the OUTPUT check exists to
+  catch. If the red appears but that string does not, something else went
+  wrong - say so, do not bank it.
+
+  EXPECT: 8 checks, 1 failure, 1 skipped / SELFTEST_FAIL / exit code 1.
+
+  SLOW ON PURPOSE: the "wait for the WinMM view to appear" step needs BOTH
+  directions at 1, and the OUTPUT side never gets there, so it burns its full
+  10 s deadline. Roughly 10 s of apparent hanging is expected here and is not
+  a fault.
+
+  IF THE INPUT CHECK IS ALSO RED: the injection did NOT prove its point.
+  Either the service is sick or the naming behaves differently than measured.
+  Report it - do not treat two reds as a stronger version of one.
+
+
+COMMAND 2 - the hide injection. Separates "it was created" from "it is visible".
+--------------------------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest-inj-esconder.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-inj-esconder.txt"
+
+  WHAT IS INJECTED: CreateOnlyUmpEndpoints goes from false to true, so the
+  service creates the endpoint and does NOT publish the legacy MIDI 1.0 view.
+  One instruction of difference from the good build: `xor edx,edx` becomes
+  `mov dl,1`.
+
+  MUST STAY GREEN - AND THIS IS THE WHOLE POINT OF THE RUN:
+      [ ok ] the port was created
+      [ ok ] and BOTH result slots were set to zero on success, not left stale
+  MUST GO RED:
+      [FAIL] the port is visible to a legacy WinMM app, as INPUT, exactly once
+      [FAIL] ...and as OUTPUT, exactly once
+  MUST BE SKIPPED, both of them:
+      [SKIP] after close: the port is gone from WinMM's INPUT list
+      [SKIP] ...and gone from the OUTPUT list
+
+  EXPECT: 8 checks, 2 failures, 2 skipped / SELFTEST_FAIL / exit code 1.
+  Also slow: the appear-wait burns its full 10 s.
+
+  IF "the port was created" IS ALSO RED, THE INJECTION PROVED NOTHING. That is
+  the failure mode this run exists to avoid: creation failing makes the two
+  visibility checks go red for free, which is exactly what a wedged service
+  does, and it is what happened on 2026-08-01. Check the create line at the
+  top, and if it says 0x800705B4, reboot and redo. The value of this run is
+  precisely "created GREEN, visible RED" - nothing else counts.
+
+  The "--- WinMM after create ---" dump must show the machine's ordinary ports
+  and NO "BCD3000 SELFTEST" of any spelling.
+
+
+COMMAND 3 - the good one. THIS IS THE ONE THAT CLOSES THE TASK.
+----------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-bom.txt"
+
+  Built from the committed source, md5 confirmed identical to the commit.
+
+  EXPECT, all eight green, nothing skipped:
+      8 checks, 0 failures, 0 skipped
+      SELFTEST_OK
+      exit code 0
+
+  And in the "--- WinMM after create ---" dump, exactly these two new entries,
+  with NO suffix of any kind:
+      IN  [n] "BCD3000 SELFTEST"
+      OUT [n] "BCD3000 SELFTEST"
+
+  Then, in "--- WinMM after close ---", both gone and the machine back to the
+  port list it had in "--- WinMM before ---".
+
+  FAST, unlike the other two: both directions reach 1 quickly, so the
+  appear-wait returns in well under a second and prints the real figure.
+
+  THE NUMBER TO WRITE DOWN: the line
+      ...NNN ms for the WinMM view to appear (deadline 10000 ms)
+  This is the first honest measurement of that latency. The earlier round
+  reported "250 ms" from a counter that added up sleeps and ignored the cost of
+  the enumerations; this one is GetTickCount64 and is real. Please paste it.
+
+
+EXIT CODES, ALL THREE BINARIES
+-------------------------------
+  0   every check green, nothing skipped                 (SELFTEST_OK)
+  1   at least one check red                             (SELFTEST_FAIL)
+  2   nothing red but something skipped                  (SELFTEST_INCOMPLETE)
+      Believed unreachable: the only way to skip is for a port not to have
+      appeared in a direction, and that already turns the matching visibility
+      check red. If you ever see exit 2, that reasoning is wrong and it is
+      worth knowing.
+
+
+WHAT "SKIPPED" MEANS HERE, SO IT IS NOT READ AS A PASS OR AS A MISS
+---------------------------------------------------------------------
+The two post-close checks ask "did the port disappear". That question only has
+meaning if the port was THERE a moment earlier, in that direction. When it was
+not, the check reports [SKIP] with its reason instead of a green.
+
+This exists because of a real result: on 2026-08-01 the eight-check build was
+run against a wedged service, the port was never created, and both post-close
+checks printed [ ok ] - "it is gone" being trivially true of something that
+never existed. Two hollow greens. The denominator stays at 8 either way, so a
+check that quietly stopped running still shows up in the count.
+
+The precondition is APPEARANCE, not creation, and it is per direction. That is
+why command 1 skips only the OUTPUT half: on that run the port really is in
+WinMM's input list, so its disappearance from there is a genuine measurement of
+the close, while the output half never appeared and cannot be.
+
+
+WHAT WAS NOT RUN, AND BY WHOM
+-------------------------------
+NOTHING in this file has been executed by the implementer. All three binaries
+were compiled and never started; no MIDI port was created, opened or closed
+while they were built. The MIDI service was already wedged from an earlier
+session and was not touched, restarted, or repaired.
+
+Also not run, per the project's standing rule: BCD3000Setup.exe,
+BCD3000Uninstall.exe, BCD3000Check.exe, native\bcdasio\tests.exe.

@@ -1,0 +1,222 @@
+TASK 3 SELF-TEST - THE THREE BINARIES, WHAT EACH COSTS, AND WHAT EACH MUST SAY
+==============================================================================
+Written 2026-08-02. Shell: PowerShell. Nothing here needs administrator.
+Read selftest-COMMANDS.txt (Task 1) first: the budget rule, the discriminator
+line and the meaning of [SKIP] are all defined there and are unchanged.
+
+WHAT IS NEW IN THIS ROUND
+--------------------------
+The self-test went from 8 checks to 19. The eight are all still there, in the
+same order and with the same wording; the eleven new ones are the point of Task
+3 - the port now has to CARRY BYTES, both ways, and the bytes are compared one
+by one instead of being counted.
+
+    9  a legacy WinMM app can OPEN the port's output side
+   10  a legacy WinMM app can OPEN and START the port's input side
+   11  WinMM -> DLL: the receive callback fired, with the user pointer ...
+   12  WinMM -> DLL: ...and it carried exactly 90 3C 64, three bytes, in order
+   13  DLL -> WinMM: BcdMidiSend reported that the bytes left
+   14  DLL -> WinMM: a message reached the legacy WinMM input
+   15  DLL -> WinMM: ...and it carried exactly B0 07 40, in that order
+   16  DLL -> WinMM: the running-status seed B1 0A 11 reported that the bytes left
+   17  DLL -> WinMM: ...and a following send of TWO DATA BYTES WITH NO STATUS
+       also reported that the bytes left
+   18  DLL -> WinMM: both running-status messages reached the legacy WinMM input
+   19  DLL -> WinMM: ...and they were exactly B1 0A 11 then B1 0B 22, in order
+
+THREE DIFFERENT test messages, and no two of them shared between directions.
+If the port ever looped back on itself, a shared vector would let the echo of
+one direction pass as the arrival of another. Direction one uses 90 3C 64;
+direction two uses B0 07 40; the running-status pair uses status B1, which
+appears nowhere else in the harness.
+
+CHECKS 16-19 ARE THE ONES ADDED AFTER REVIEW, and they are worth understanding
+before you read their colours. Everything else in this file sends one whole
+message per call, and a translator that had never heard of running status would
+pass all of it. Check 17's send contains two bytes, 0x0B and 0x22, and NEITHER
+OF THEM IS 0xB1. If a message whose status byte is B1 comes out of the port
+after that call, the only place that B1 can have come from is state the DLL
+kept from the call before it. That is the whole proof, and it costs no extra
+reboot: it runs inside the same port-creation window as checks 1-15.
+
+
+THE BUDGET
+-----------
+Unchanged and it still governs everything: microsoft/MIDI issue #1047 means
+ONE BINARY PER BOOT. Do not try two.
+
+    <repo>\native\bcdmidi\runs\
+        selftest-t3-pre.exe            -> BcdMidi-t3-pre.dll           (BEFORE)
+        selftest-t3.exe                -> BcdMidi-t3.dll               (the good one)
+        selftest-t3-inj-terceiro.exe   -> BcdMidi-t3-inj-terceiro.dll  (INJECTED)
+
+Each is linked against its OWN differently-named DLL, so the three share one
+directory and never shadow each other. None of them is in git; runs/ is
+ignored. The five Task 1 binaries are still in that folder, untouched, and
+still print 8 checks - they are a different round and are not superseded by
+anything here.
+
+IF THE BOOTS RUN OUT, spend them in this order: COMMAND 2 first (it is the only
+one that closes the task), then COMMAND 3 (it certifies that the new checks can
+fail), then COMMAND 1. COMMAND 1 is last because its result is the one that can
+be read off the source with the least doubt.
+
+
+COMMAND 1 - BEFORE. The failing state Task 3 was written against.
+------------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest-t3-pre.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-t3-pre.txt"
+
+  WHAT IS IN IT: commit 100d8e7's bcdmidi.cpp - BcdMidiSend is `return 0` for
+  every call and no MessageReceived handler is ever registered - linked against
+  the NEW 15-check self-test. It is the "run it and watch it fail" step, built
+  and never run by the implementer.
+
+  IT LINKS. It was worth checking: the plan expected a link error on
+  BcdMidiSend, and there is none, because Task 1 already exported the symbol as
+  a stub. The five reds below come from behaviour, not from a missing symbol.
+
+  MUST STAY GREEN, all ten of them:
+      the eight Task 1 checks, plus
+      [ ok ] a legacy WinMM app can OPEN the port's output side
+      [ ok ] a legacy WinMM app can OPEN and START the port's input side
+  MUST GO RED, all six:
+      [FAIL] WinMM -> DLL: the receive callback fired, ...
+      [FAIL] WinMM -> DLL: ...and it carried exactly 90 3C 64, ...
+      [FAIL] DLL -> WinMM: BcdMidiSend reported that the bytes left
+      [FAIL] DLL -> WinMM: a message reached the legacy WinMM input
+      [FAIL] DLL -> WinMM: ...and it carried exactly B0 07 40, ...
+      [FAIL] DLL -> WinMM: the running-status seed B1 0A 11 reported that ...
+  MUST BE SKIPPED, all three, and this is correct rather than a miss:
+      [SKIP] DLL -> WinMM: ...and a following send of TWO DATA BYTES ...
+      [SKIP] DLL -> WinMM: both running-status messages reached ...
+      [SKIP] DLL -> WinMM: ...and they were exactly B1 0A 11 then B1 0B 22 ...
+             NOT MEASURED: the seeding send never left, so no status byte was
+             ever established for a following one to reuse.
+
+  THE SKIPS ARE THE RIGHT ANSWER HERE, not a gap. The stub BcdMidiSend refuses
+  everything, so nothing established a running status, so "did the continuation
+  reuse it" is genuinely unmeasurable on this binary - and the check that would
+  have established it is red one line above, which is what keeps a skip from
+  ever standing on its own.
+
+  EXPECT: 19 checks, 6 failures, 3 skipped / SELFTEST_FAIL / exit code 1.
+
+  SLOW BY ABOUT SIX SECONDS: nothing ever arrives in either direction, so both
+  round-trip waits burn their full 3000 ms deadline. There is no third wait -
+  the running-status block is skipped before it reaches one.
+
+  THE EVIDENCE LINES:
+      ...the DLL's callback received: 0 byte(s)
+      ...BcdMidiSend(B0 07 40) returned 0
+      ...BcdMidiSend(B1 0A 11) returned 0
+
+
+COMMAND 2 - THE GOOD ONE. THIS IS THE ONE THAT CLOSES THE TASK.
+----------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest-t3.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-t3-bom.txt"
+
+  Built from the committed source, byte for byte.
+
+  EXPECT, all nineteen green, nothing skipped:
+      19 checks, 0 failures, 0 skipped
+      SELFTEST_OK
+      exit code 0
+
+  And these evidence lines, which are the measurement rather than the verdict:
+      ...the DLL's callback received: 3 byte(s) 90 3C 64
+      ...BcdMidiSend(B0 07 40) returned 1
+      ...the WinMM input received: 3 byte(s) B0 07 40
+      ...first dwParam1=0x004007B0
+      ...BcdMidiSend(B1 0A 11) returned 1
+      ...BcdMidiSend(0B 22 - TWO DATA BYTES, NO STATUS) returned 1
+      ...the WinMM input received, message 2: 3 byte(s) B1 0A 11
+      ...the WinMM input received, message 3: 3 byte(s) B1 0B 22
+  WinMM packs a short message backwards from how it reads: status in the low
+  byte, then the two data bytes. 0xB0 | 0x07<<8 | 0x40<<16 = 0x004007B0.
+
+  THE LINE THAT PROVES RUNNING STATUS is "message 3: B1 0B 22". The B1 was
+  never sent in that call; the DLL supplied it from the call before.
+
+  "it fired N time(s) in total" MUST READ 3. If it reads more, something else
+  on this machine is also sending to the port, the messages are being read at
+  shifted positions, and check 19 may be red for a reason that has nothing to
+  do with the DLL. Say so rather than banking it.
+
+  TWO NUMBERS WORTH WRITING DOWN, because nobody has measured either:
+      ...NNN ms for the DLL's callback
+      ...NNN ms for the WinMM input
+  These are the real round-trip latency of Windows MIDI Services on this
+  machine, and the whole product's feel depends on them. Please paste them.
+
+  IF CHECK 12 IS RED WHILE CHECK 11 IS GREEN - the callback fired but the bytes
+  were wrong - PASTE THE BYTE LINE ABOVE IT AND DO NOT DEBUG IT AS A FAILURE OF
+  THE PORT. The likeliest cause is that the service upscaled the legacy Note On
+  into a MIDI 2.0 packet and the downscaling in midi1FromUmp got a shift wrong.
+  The bytes printed say which, immediately: a velocity that reads 00 or 32
+  instead of 64 is a scaling bug, and a status that reads anything but 90 is
+  not.
+
+
+COMMAND 3 - THE INJECTION. Proves the new checks can fail.
+------------------------------------------------------------
+    & "<repo>\native\bcdmidi\runs\selftest-t3-inj-terceiro.exe" 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\selftest-t3-inj-terceiro.txt"
+
+  WHAT IS INJECTED: one line of bcdmidi.cpp, in feedMidi1Byte, where the
+  completed message is packed into a UMP word. The third byte of the message -
+  the second data byte - is replaced by zero on the way out:
+
+      -                      p->runDataCount > 1 ? p->runData[1] : static_cast<unsigned char>(0));
+      +                      static_cast<unsigned char>(0));   // INJECTION: third byte dropped
+
+  It touches the SEND path only, and it touches EVERY message that goes out of
+  it - so both byte comparisons in that direction catch it. The receive path is
+  untouched, which is why checks 11 and 12 must stay green: they are the
+  control group.
+
+  MUST GO RED, exactly two, and BOTH of them are byte comparisons:
+      [FAIL] DLL -> WinMM: ...and it carried exactly B0 07 40, in that order
+      [FAIL] DLL -> WinMM: ...and they were exactly B1 0A 11 then B1 0B 22, ...
+  MUST STAY GREEN - AND THIS IS THE WHOLE POINT OF THE RUN:
+      [ ok ] DLL -> WinMM: BcdMidiSend reported that the bytes left
+      [ ok ] DLL -> WinMM: a message reached the legacy WinMM input
+      [ ok ] DLL -> WinMM: the running-status seed B1 0A 11 reported that ...
+      [ ok ] DLL -> WinMM: ...and a following send of TWO DATA BYTES ...
+      [ ok ] DLL -> WinMM: both running-status messages reached ...
+      ...and the other twelve.
+
+  FOUR ARRIVAL CHECKS GREEN AND TWO BYTE CHECKS RED is the strongest form of
+  this evidence. Every check that only asks "did something get here" passes,
+  and only the ones that ask "did the right thing get here" fail.
+
+  EXPECT: 19 checks, 2 failures, 0 skipped / SELFTEST_FAIL / exit code 1.
+  FAST: every wait is satisfied, nothing burns a deadline.
+
+  THE EVIDENCE LINES, and they are the point of the whole run:
+      ...the WinMM input received: 3 byte(s) B0 07 00
+      ...first dwParam1=0x000007B0
+      ...the WinMM input received, message 2: 3 byte(s) B1 0A 00
+      ...the WinMM input received, message 3: 3 byte(s) B1 0B 00
+  Messages arrived, on time, with the right status and the right controller
+  number, and the wrong value. A check that only counted arrivals would have
+  called that a pass. That is exactly why checks 15 and 19 compare bytes.
+
+  NOTE THAT MESSAGE 3 STILL READS B1. The injection drops a data byte, not the
+  status byte, so running status itself still works under it - which is why
+  checks 17 and 18 stay green and only the value is wrong.
+
+  IF ANY ARRIVAL CHECK (14, 18) IS ALSO RED, THE INJECTION PROVED NOTHING. More
+  reds are not a stronger version of two: they would mean the messages never
+  arrived at all, and then the byte comparison was never the thing that failed.
+  Report it as an inconclusive run rather than banking it.
+
+
+WHAT WAS NOT RUN, AND BY WHOM
+-------------------------------
+NOTHING in this file has been executed by the implementer. All three binaries
+were compiled and never started; no MIDI port was created, opened or closed
+while they were built. The rule that only the controller may create a virtual
+port on this machine was not broken and not approached.
+
+Also not run, per the project's standing rule: BCD3000Setup.exe,
+BCD3000Uninstall.exe, BCD3000Check.exe, native\bcdasio\tests.exe,
+native\bcdmidi\selftest.exe and the two Task 1 injections.

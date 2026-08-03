@@ -1,0 +1,28 @@
+# Microsoft's Windows.Devices.Midi2 package, fetched from nuget.org into wms/.
+# See the header of build.bat for exactly which three files go here and where
+# they come from inside the package.
+#
+# It is MIT and we ARE allowed to redistribute it - but MIT requires the
+# copyright notice to travel with it, and that notice is not in LICENSE yet
+# (Task 7 Step 1 of the plan puts it there, and calls it a legal obligation
+# rather than documentation). Until then nothing of Microsoft's is committed
+# here. This is the same arrangement native/ASIOSDK/ already uses, and
+# build.bat prints the fetch instructions when the folder is empty.
+wms/
+
+# The C++/WinRT projection. Thousands of generated headers derived from
+# wms/Windows.Devices.Midi2.winmd plus the Windows SDK; build.bat regenerates
+# it on every run, so a checked-in copy could only ever be a stale one.
+winrt/
+
+# Build artefacts. *.dll, *.lib, *.exe, *.obj and *.pdb are already excluded
+# repository-wide; these are the ones this folder produces on top of those.
+*.exp
+Windows.Devices.Midi2.pri
+
+# runs/ holds the binaries staged for the controller to run one per reboot,
+# including the two INJECTED builds. Injected builds must never reach the
+# repository - a defect deliberately compiled in is the one artefact that must
+# not outlive the measurement it was made for. selftest-COMMANDS.txt says what
+# is in there and how each one was produced.
+runs/

@@ -1,0 +1,113 @@
+TASK 2 GATE - THE COMMANDS TO RUN, AND WHAT EACH ONE COSTS
+==========================================================
+Written 2026-08-01. Shell: PowerShell. Nothing here needs administrator.
+
+WHAT IS ALREADY ANSWERED, SO YOU DO NOT SPEND A BOOT ON IT
+----------------------------------------------------------
+The search-path half of the gate is MEASURED AND GREEN, twice, on this
+machine, with no MIDI port created and the MIDI service never touched:
+
+  * inside the packaged one-file process, sys._MEIPASS is
+    %TEMP%\_MEIxxxxx and the .exe is somewhere else entirely, as feared;
+  * and Microsoft's Windows.Devices.Midi2.dll IS STILL FOUND from there,
+    by the exact call C++/WinRT makes
+    (LoadLibraryExW(bare name, NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)),
+    and it exports DllGetActivationFactory.
+
+  The reason: PyInstaller's bootloader calls SetDllDirectoryW(_MEIPASS).
+  A directory set that way counts as a USER_DIR, and
+  LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = APPLICATION_DIR + SYSTEM32 + USER_DIRS.
+  Measured, not assumed: the probe prints GetDllDirectoryW() and it equals
+  _MEIPASS, and a bare-name load of BcdMidi.dll - a file that exists in no
+  other directory on this machine - resolves to _MEIPASS too.
+
+So the ONLY thing left to buy with a reboot is whether the activation and
+the create itself work from inside the package. That is one command.
+
+
+COMMAND 1 - free. Costs nothing, creates nothing. Run it first.
+---------------------------------------------------------------
+    & "<repo>\native\bcdmidi\dist\pyloadtest.exe"
+
+  Creates NO MIDI port and does not talk to the MIDI service. It re-checks,
+  on the freshly booted machine, that the package still unpacks and that both
+  DLLs are still reachable. Expect exit code 0 and the line
+  "RESULT: everything reachable, NO PORT CREATED".
+
+  If this is not green, STOP - do not run command 2. A create attempt against
+  a broken search path costs a reboot and tells you nothing you do not
+  already know.
+
+
+COMMAND 2 - THIS ONE CREATES A REAL MIDI PORT. One port, once.
+---------------------------------------------------------------
+    & "<repo>\native\bcdmidi\dist\pyloadtest.exe" --create
+
+  To keep the output:
+    & "<repo>\native\bcdmidi\dist\pyloadtest.exe" --create 2>&1 | Tee-Object -FilePath "$env:USERPROFILE\pyloadtest-create.txt"
+
+  It creates a port named "BCD3000 LOADTEST" - deliberately NOT "BCD3000",
+  so that a port that somehow survives cannot be mistaken for the product's
+  and cannot be picked up by VirtualDJ's factory mapping - and closes it
+  again. It can take up to 45 s to answer and up to 30 s more to close; the
+  DLL has time limits on both and always returns.
+
+  BUDGET: this is ONE create. Per microsoft/MIDI issue #1047 the machine's
+  MIDI service may stop answering after the first virtual port of a boot is
+  closed. Assume this command spends the boot.
+
+  SEQUENCING, FOR THE CONTROLLER TO DECIDE BEFORE THE BOOT: Task 1's report
+  also has two mandatory injection re-runs waiting for a fresh boot, and its
+  own note says they have to run FIRST. Both of these want the same clean
+  service. Decide the order before rebooting, not after.
+
+  Exit codes: 0 = the gate is passed. 3 = Microsoft's DLL out of reach.
+  4 = BcdMidi.dll would not load. 5 = the port was not created.
+
+
+IF COMMAND 2 FAILS - READ THE TWO NUMBERS BEFORE CHANGING ANYTHING
+-------------------------------------------------------------------
+The probe prints "category N" and "HRESULT 0x........". They mean different
+things and the response is different for each. Do not skip to a fallback.
+
+  category 1 (service missing) or 2 (transport missing),
+  or category 3 with HRESULT 0x800705B4 (a timeout)
+      NOT a packaging failure - command 1 already proved the DLL is
+      reachable. This is the machine's MIDI service, i.e. defect #1047 or a
+      service that is not running. RESPONSE: reboot and re-run command 2 as
+      the FIRST MIDI thing of that boot. Change nothing about the packaging.
+
+  category 6 (WinRT exception) with HRESULT 0x80040154 (REGDB_E_CLASSNOTREG)
+      THIS is the packaging failure the gate exists for. Take the fallbacks
+      in this order, ONE AT A TIME, and stop at the first that works:
+        1)  ...\pyloadtest.exe adddir --create
+            (os.add_dll_directory on the payload directory - one line for
+             Task 4 to add to the bridge, and it costs nothing)
+        2)  ...\pyloadtest.exe preload --create
+            (load Microsoft's DLL by absolute path first; the loader then
+             matches the later bare-name load by base name)
+        3)  ship both DLLs beside the .exe in the install directory
+        4)  onedir instead of onefile - and if you go there, EXE() needs
+            contents_directory='.', because PyInstaller 6 puts a onedir
+            payload in an _internal\ subdirectory, which is NOT the
+            application directory and would not fix anything on its own.
+      Each of 1 and 2 costs one more port, so one boot each.
+
+  category 4 (the connection would not open)
+      Not a packaging failure either: the device was created and the session
+      or the connection failed. Reboot, re-run, and if it repeats it belongs
+      to Task 3, not here.
+
+  exit code 4, BcdMidi.dll would not load
+      Read the message. Its non-system dependencies are MSVCP140.dll,
+      VCRUNTIME140.dll and VCRUNTIME140_1.dll; all three are already inside
+      the package (PyInstaller collects them for Python's own sake), so this
+      is not expected. If it happens, that byproduct is what changed.
+
+
+WHAT WAS NOT RUN, AND WILL NOT BE, WITHOUT BEING ASKED
+-------------------------------------------------------
+BCD3000Setup.exe, BCD3000Uninstall.exe, BCD3000Check.exe,
+native\bcdasio\tests.exe, native\bcdmidi\selftest.exe, and the rebuilt
+poc\dist\BCD3000Bridge.exe. The bridge was REBUILT to prove the .spec still
+works; it was not run and it was not installed.

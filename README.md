@@ -59,6 +59,10 @@ controls come back **without reopening the DJ software**.
 * Only one program can hold the device at a time. The driver and the control service hand it
   back and forth automatically, so this is invisible in normal use — but a virtual machine's
   USB arbitrator can steal it. (VMware took it twice in one day on the development machine.)
+* **A known Windows defect can make the virtual MIDI port fail to recreate until the next
+  reboot.** Tracked upstream as `microsoft/MIDI` issue #1047, acknowledged by Microsoft with
+  no fix date. Details, and what the installer checks for it, are under Step 3 in
+  [Installing it](#installing-it) below.
 
 ### Hardware support
 
@@ -83,8 +87,8 @@ from real hardware.
 
 ## Installing it
 
-**Right now this is six steps, and two of them are other people's programs.** That is the
-honest answer, and shortening it is the project's main open problem — see
+**Right now this is five steps, and one of them is somebody else's program.** That is the
+honest answer, and shortening it further is the project's main open problem — see
 [The goal is one installer](#the-goal-is-one-installer) below.
 
 > **Before you start: Windows SmartScreen will warn you about the download.** The installer
@@ -100,28 +104,7 @@ Zadig has anything to replace. It also lets the installer tell "this machine has
 the device" apart from "the device is here but not bound yet", which are different problems
 with different fixes.
 
-### Step 1 — Install **loopMIDI**, which brings **teVirtualMIDI** with it
-
-* Download page: **https://www.tobias-erichsen.de/software/loopMIDI.html**
-* Verified version: **1.0.16.27**
-* SHA-256: `975399EB76E2C5A1D553ECD8975AB361261CCAB8FD9412B8060B19877CB4E0D5`
-* Also available as `winget install --id TobiasErichsen.loopMIDI`
-
-To check what you downloaded: `certutil -hashfile loopMIDISetup.exe SHA256`
-
-**This is somebody else's software and it is not part of this project.** It is by Tobias
-Erichsen, it is not redistributed here, and it is not in this repository — its licence does
-not permit that. The control service loads `teVirtualMIDI64.dll` at run time to create one
-virtual MIDI port named `BCD3000`, which is how DJ software sees the controller. **Audio
-works without it; the knobs, buttons and LEDs do not.**
-
-It contains a kernel-mode driver and installs it properly through PnP, so **this is the step
-that may ask you to restart Windows.** That is why it comes first.
-
-We are not the source of those bytes, but we are a source of truth about which bytes are the
-right ones — hence the version and hash above.
-
-### Step 2 — Run **Zadig** once, to bind the device to WinUSB
+### Step 1 — Run **Zadig** once, to bind the device to WinUSB
 
 * Download page: **https://zadig.akeo.ie/**
 
@@ -152,7 +135,7 @@ it. See [The goal is one installer](#the-goal-is-one-installer).
 **If you ever need to undo it:** Device Manager → find the device → uninstall it and tick
 "delete the driver software" → unplug and replug.
 
-### Step 3 — Run the installer
+### Step 2 — Run the installer
 
 `BCD3000Setup.exe`. It asks for administrator rights, shows you what it found on your
 machine **before** changing anything, and lists what is left to do afterwards.
@@ -169,11 +152,11 @@ It installs:
 Startup\BCD3000 Bridge.lnk               starts the service when you sign in
 ```
 
-**What it refuses to do**, on purpose: it never rebinds a USB device, it never installs
-teVirtualMIDI, it never turns off a Windows protection and never asks you to, and it does not
-stop the control service while it is running.
+**What it refuses to do**, on purpose: it never rebinds a USB device, it never creates a MIDI
+port itself — not even to test one, it never turns off a Windows protection and never asks
+you to, and it does not stop the control service while it is running.
 
-### Step 4 — Start the control service
+### Step 3 — Start the control service
 
 Sign out and back in, **or** double-click the shortcut in your Startup folder. The installer
 tells you where it is.
@@ -181,7 +164,21 @@ tells you where it is.
 Start it from Explorer, **not** from an administrator prompt: it has to run unelevated for
 the driver to be able to reach it.
 
-### Step 5 — Open your DJ software and select the driver
+**Once it's running, it creates one virtual MIDI port named `BCD3000`** — how DJ software
+sees the knobs, buttons and LEDs. It does this by loading **`BcdMidi.dll`** (ours), which
+calls **Microsoft's Windows MIDI Services** through **`Windows.Devices.Midi2.dll`** —
+Microsoft's own runtime, shipped beside the control service under the MIT licence (see
+[Licence](#licence) below). Nothing third party is installed for this step any more: Windows
+MIDI Services is part of Windows 11 itself. **Audio works without this service running; the
+knobs, buttons and LEDs do not.**
+
+A known Windows defect can stop this port from being created again until the machine
+reboots — tracked upstream as `microsoft/MIDI` issue #1047, acknowledged by Microsoft with no
+fix date. The installer's own screen 3 reads whether your Windows build is on the affected
+list and says so plainly; **it never creates a port itself to find out whether yours will
+work, and this README does not promise more than that.**
+
+### Step 4 — Open your DJ software and select the driver
 
 Pick **`Behringer BCD3000`** as the ASIO device. You should see 4 outputs and 4 inputs at
 44.1 kHz.
@@ -226,18 +223,12 @@ its own.
 
 ## The goal is one installer
 
-**One click was the goal from the start, and this is not it yet.** Two of the six steps above
-are somebody else's program, and the reasons each one is still manual are worth stating
-plainly, because they are not laziness:
+**One click was the goal from the start, and this is not it yet — but one of the two manual
+steps that used to be here is gone.** Five steps remain above, and one of them is somebody
+else's program. The reason it is still manual is worth stating plainly, because it is not
+laziness:
 
-* **loopMIDI / teVirtualMIDI.** Embedding its installer is **prohibited by its licence**, in
-  two independent places — the author's software page, and the EULA inside the installer
-  itself ("Distribution in any form without prior written permission by the author is
-  prohibited!"). That includes putting it in this repository, because a public repository is
-  distribution. So the installer detects it, explains it, and points at the author's own
-  download page. A redistributable module **does** exist for licensees, which would collapse
-  this step to zero — that conversation is open.
-* **Zadig.** This one is not a licence problem and it is **deliberate**. Zadig's underlying
+* **Zadig.** This is not a licence problem and it is **deliberate**. Zadig's underlying
   library installs a self-signed certificate into the Trusted Root and Trusted Publishers
   stores *and* silently sets a Group Policy. Automating that would contradict the one sentence
   that justifies this project existing — *without turning off any Windows protection*. A
@@ -249,27 +240,73 @@ Nothing about this project's own code depends on Zadig specifically. It depends 
 being bound to WinUSB and on one registry value being present. Any route that achieves those
 two things works.
 
-The direction that would remove the teVirtualMIDI dependency entirely is **Windows MIDI
-Services** (MIT-licensed, user mode). It is not usable yet: Windows 11 only, its MIDI 1.0
-loopback still needs Developer Mode, and its preview binaries say not to ship them. It is
-being watched.
+**What is not one-click, honestly:** Zadig's manual run above, and the unsigned-binary
+SmartScreen warning described in [Installing it](#installing-it). Both stay manual for the
+reasons stated there, not for lack of trying.
+
+### What used to be here: loopMIDI / teVirtualMIDI
+
+Until August 2026 there was a **second** manual step: installing **loopMIDI**, which brought
+**teVirtualMIDI** with it, a third-party kernel-mode driver that created the virtual MIDI
+port. That step is gone, and the reason is worth recording rather than deleting, because it
+is also the reason this project could be published at all.
+
+Embedding teVirtualMIDI's installer was **prohibited by its licence**, in two independent
+places — the author's own software page, and the EULA inside the installer itself
+("Distribution in any form without prior written permission by the author is prohibited!").
+That included putting it in this repository, because a public repository is distribution. An
+email asking the author about a redistributable licence, sent 2026-07-29, went unanswered.
+That single clause was the thing blocking this project from being published at all — not a
+technical problem, a legal one.
+
+So the port now comes from **Windows MIDI Services** instead: Microsoft's own, MIT-licensed,
+and already part of Windows 11. Microsoft's own FAQ answers the same licensing question the
+opposite way: *"Q: Can I sell an application which uses Windows MIDI Services / A: Yes. Of
+course."* The control service loads our own `BcdMidi.dll`, which calls Microsoft's
+`Windows.Devices.Midi2.dll` — shipped beside it, under the MIT licence (see
+[Licence](#licence) below, and the mechanism under Step 3 in
+[Installing it](#installing-it)). **Nothing of Tobias Erichsen's software is loaded, linked
+to, or called by this product any more.** Anyone who already has loopMIDI installed — from an
+older version of this project, or for an unrelated reason — is unaffected: this project no
+longer looks for it, either to use it or to remove it.
+
+This change did not make the driver Windows-10-capable — if anything it is the opposite, see
+[Windows 10](#windows-10) below — and it did not make the MIDI port's creation guaranteed to
+work on every machine: see the known Windows defect noted in
+[Status](#status) above and what Step 3 checks for it.
 
 ---
 
 ## Windows 10
 
-**It should work, and nobody has tested it.** That is the honest statement, and the README is
-not going to claim more than that. Nothing declares a minimum Windows version anywhere in the
-code, and the real floor is WinUSB's isochronous API, which has existed since Windows 8.1.
+The claim that used to be here — "it should work, nobody has tested it" — was written for
+the **teVirtualMIDI** architecture, a kernel driver with no Windows 11 requirement of its own.
+That architecture is gone (see [The goal is one installer](#the-goal-is-one-installer)), and
+the claim does not automatically carry over to what replaced it.
 
-**But you may not need this project at all on Windows 10.** The trust removal that breaks the
-2010 driver is documented for Windows 11 24H2, 25H2, 26H1 and Windows Server 2025 — **Windows
-10 is not in that list.** So the manufacturer's own package may still load for you, which is
-less work than this. Note that the two are mutually exclusive: installing theirs is exactly
-the warning in Step 5.
+**What is established, from Microsoft's own documentation, and not from a test on this
+project's own hardware:** Windows MIDI Services requires Windows 11. Microsoft's own page for
+it states plainly, *"The Windows MIDI Services runtime and tools requires Windows 11 with the
+Windows MIDI Service, plugins, and USB driver pre-installed from Microsoft."* Nothing in this
+project has verified that on real Windows 10 hardware, and there was no cheap way to do so
+without a Windows 10 machine — but Microsoft's own statement is reason enough not to expect
+the control service's MIDI port to work there.
 
-If you try either on Windows 10, please open an issue and say what happened. It decides who
-this project is for.
+**The audio path is a separate question, and the old reasoning about it still holds.** The
+ASIO driver talks to the hardware over WinUSB's isochronous API, which has existed since
+Windows 8.1, and nothing in this project's own code declares a minimum Windows version for
+it. Nobody has tested it on Windows 10. So on Windows 10 the audio may still work; the knobs,
+buttons and LEDs will not, because Windows MIDI Services is Windows 11 only.
+
+**You may not need any of this on Windows 10 in the first place.** The trust removal that
+breaks the manufacturer's 2010 driver is documented for Windows 11 24H2, 25H2, 26H1 and
+Windows Server 2025 — **Windows 10 is not in that list.** So the manufacturer's own package
+may still load for you, which is less work than this. Note that the two are mutually
+exclusive: installing theirs is exactly the warning in Step 4.
+
+This is out of scope for this project on purpose — the owner has called Windows 10 support
+"a plus, not a requirement" — so none of the above blocks anything. If you try either on
+Windows 10, please open an issue and say what happened. It decides who this project is for.
 
 ---
 
@@ -284,9 +321,16 @@ rem the driver
 cd native\bcdasio
 build.bat dll
 
-rem the control service
+rem the MIDI port, and Microsoft's runtime DLL copied beside it
+cd ..\bcdmidi
+build.bat dll
+
+rem the control service. BUILD IT FROM THE .spec, never from a bare command
+rem line: `pyinstaller --onefile ... bridge_service.py` OVERWRITES the .spec
+rem with a generated one, and the generated one does not carry the two MIDI
+rem DLLs. The build still succeeds and the MIDI port simply never appears.
 cd ..\..\poc
-pyinstaller --onefile --noconsole --name BCD3000Bridge bridge_service.py
+pyinstaller --noconfirm BCD3000Bridge.spec
 
 rem the installer, which embeds both of the above plus the uninstaller
 cd ..\installer
@@ -319,8 +363,16 @@ Two things are **not** covered by it:
 The **ASIO logo is deliberately not used anywhere** — it has its own trademark rules. "ASIO"
 is a trademark of Steinberg Media Technologies GmbH.
 
-`teVirtualMIDI` is copyright Tobias Erichsen. It is a **run-time dependency loaded by the
-control service** and it is **not redistributed here**.
+One thing **is** redistributed, and its notice travels with it:
+
+* `Windows.Devices.Midi2.dll` — Windows MIDI Services, from
+  [github.com/microsoft/MIDI](https://github.com/microsoft/MIDI), under the **MIT** licence,
+  **Copyright (c) Microsoft Corporation**. The installer embeds it and writes it beside the
+  control service, so the MIT licence requires its copyright notice to be included with every
+  copy. It is reproduced in full in [LICENSE](LICENSE), under *Third party software
+  redistributed by this project*. The binary is not in this repository — `.gitignore` excludes
+  `*.dll` — so a clone fetches the `Windows.Devices.Midi2` package from nuget.org, the same
+  arrangement the ASIO SDK gets.
 
 ---
 

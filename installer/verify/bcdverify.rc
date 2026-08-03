@@ -28,3 +28,7 @@ MANIFEST_RESOURCE_ID RT_MANIFEST_TYPE "harness.manifest"
 102 RCDATA "..\\..\\poc\\dist\\BCD3000Bridge.exe"
 103 RCDATA "..\\BCD3000Uninstall.exe"
 110 RCDATA "..\\..\\docs\\BCD3000.PNG"
+// Page 2's Zadig screenshot. Embedded here for the same reason as the four above:
+// without it the captures would show the page's degraded form - caption, no picture -
+// which is a real branch of renderReview() but not the one the product ships.
+111 RCDATA "..\\..\\docs\\Zadig.png"

@@ -198,11 +198,71 @@ int main()
     gatherMachineState(&state);
     reportMachineState(&state);
 
+    // ---------------------------------------------------------------------
+    // WINDOWS MIDI SERVICES, PRINTED HERE AND NOT INSIDE reportMachineState().
+    //
+    // *** THAT PLACEMENT IS DELIBERATE AND IT IS NOT WHERE IT BELONGS ON THE
+    //     MERITS. *** reportMachineState() is the natural home - it is the
+    // support report, and BCD3000Setup.exe would carry these lines for free.
+    // It is also the function whose output fills the log pane in
+    // page-3-*.png, two of the 56 tracked captures that this round is required
+    // to leave byte identical. Adding four lines there moves two PNGs for a
+    // reason that has nothing to do with the screen this round is about.
+    //
+    // So it is printed by the READ ONLY program, whose output is not
+    // photographed, and the omission is written down here rather than left to
+    // be discovered: whoever next has a reason to move a capture should move
+    // these lines into reportMachineState() in the same change.
+    // ---------------------------------------------------------------------
+    say(L"--- Windows MIDI Services ---");
+    sayInfo(L"%s service registered : %d", kMidiServiceName,
+            state.winMidi.serviceRegistered ? 1 : 0);
+    sayInfo(L"%s : present %d, version %lu.%lu.%lu.%lu", kMidiTransportDllName,
+            state.winMidi.transportPresent ? 1 : 0,
+            state.winMidi.transportVersion[0], state.winMidi.transportVersion[1],
+            state.winMidi.transportVersion[2], state.winMidi.transportVersion[3]);
+    sayInfo(L"%s : version read %d, %lu.%lu.%lu.%lu", kMidiServiceExeName,
+            state.winMidi.serviceVersionRead ? 1 : 0,
+            state.winMidi.serviceVersion[0], state.winMidi.serviceVersion[1],
+            state.winMidi.serviceVersion[2], state.winMidi.serviceVersion[3]);
+    sayInfo(L"last read error     : %lu", state.winMidi.lastError);
+    sayBlank();
+
     say(L"=========================== VERDICT ===========================");
     bool ready = true;
-    if (state.tevm.state != kTeVmPresent) {
-        say(L"  teVirtualMIDI is missing      -> controls and LEDs will not work");
-        ready = false;
+    // *** THE MIDI PORT VERDICT LINE IS BACK, AND IT IS ABOUT WINDOWS RATHER
+    //     THAN ABOUT ANYTHING ANYBODY HAS TO INSTALL. ***
+    //
+    // *** IT DOES NOT MOVE `ready`, IN ANY OF THE THREE STATES, AND THAT IS THE
+    //     WHOLE JUDGEMENT IN THIS BLOCK. *** `ready` means "everything this
+    // program can SEE is in place". This program cannot see whether a port
+    // exists: finding out means creating one, and under issue #1047 creating one
+    // spends this boot's only port. So a known-bad build is reported loudly and
+    // still leaves `ready` alone - it is a fact about Windows, not a fault in the
+    // installation, and marking the machine not-ready for it would be this
+    // program judging something it never measured.
+    switch (classifyWindowsMidi(&state.winMidi)) {
+    case kWinMidiKnownBad:
+        say(L"  this Windows build (%lu.%lu) is one where Microsoft's virtual MIDI",
+            state.winMidi.serviceVersion[2], state.winMidi.serviceVersion[3]);
+        say(L"      transport is known to fail - microsoft/MIDI issue #1047, open.");
+        say(L"      Only the FIRST virtual port after a restart can be created. The");
+        say(L"      fix arrives through Windows Update; a restart clears it meanwhile.");
+        break;
+    case kWinMidiReady:
+        say(L"  Windows MIDI Services is present and this build is not on the known");
+        say(L"      bad list. No port was created to check it, so that is not a");
+        say(L"      promise that one will work.");
+        break;
+    default:
+        say(L"  Windows MIDI Services could not be established: service %d, transport"
+            L" %d, versions %d/%d, error %lu.",
+            state.winMidi.serviceRegistered ? 1 : 0,
+            state.winMidi.transportPresent ? 1 : 0,
+            state.winMidi.transportVersionRead ? 1 : 0,
+            state.winMidi.serviceVersionRead ? 1 : 0, state.winMidi.lastError);
+        say(L"      Those are the numbers that were read; no cause is guessed here.");
+        break;
     }
     if (!state.usb.enumKeyPresent || !state.usb.guidPresent) {
         say(L"  the WinUSB binding is missing -> nothing will work until Zadig is run");

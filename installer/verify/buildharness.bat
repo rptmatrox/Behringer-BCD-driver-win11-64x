@@ -15,7 +15,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\
 set INST=..
 rc /nologo /fo bcdverify.res bcdverify.rc
 if errorlevel 1 ( echo ===== HARNESS_FAIL: res ===== & exit /b 1 )
-cl /EHsc /nologo /O2 /W4 /wd4505 /D_CRT_SECURE_NO_WARNINGS /DWIN32 /D_WINDOWS /I"%INST%" bcdverify.cpp "%INST%\common.cpp" /Fe:bcdverify.exe /link /MANIFEST:NO bcdverify.res ole32.lib shell32.lib advapi32.lib setupapi.lib user32.lib gdi32.lib comctl32.lib msimg32.lib windowscodecs.lib
+cl /EHsc /nologo /O2 /W4 /wd4505 /D_CRT_SECURE_NO_WARNINGS /DWIN32 /D_WINDOWS /I"%INST%" bcdverify.cpp "%INST%\common.cpp" /Fe:bcdverify.exe /link /MANIFEST:NO bcdverify.res ole32.lib shell32.lib advapi32.lib setupapi.lib user32.lib gdi32.lib comctl32.lib msimg32.lib windowscodecs.lib version.lib
 if errorlevel 1 ( echo ===== HARNESS_FAIL: cl ===== & exit /b 1 )
 if not exist bcdverify.exe ( echo ===== HARNESS_FAIL: missing ===== & exit /b 1 )
 echo ===== HARNESS_OK =====

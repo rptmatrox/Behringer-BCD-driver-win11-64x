@@ -231,8 +231,8 @@ RELAY_BUF_BYTES = 4096
 # CPU.
 RELAY_POLL_S = 0.003
 # Fila de LEDs entre o callback da porta virtual e o thread do canal. Existe para
-# que o callback NUNCA bloqueie: ele e chamado por um thread da teVirtualMIDI, e
-# prende-lo prenderia o software de DJ.
+# que o callback NUNCA bloqueie: ele e chamado por um thread do proprio MIDI do
+# Windows, e prende-lo prenderia o software de DJ.
 RELAY_LED_FILA = 512
 # Teto de LEDs por volta do laco, para que uma rajada de LED nao deixe os
 # controles esperando.
@@ -277,30 +277,75 @@ _fila_led = queue.Queue(maxsize=RELAY_LED_FILA)
 _cont = {"canal_pkts": 0, "canal_inj": 0, "led_canal": 0, "led_usb": 0,
          "led_perdidos": 0, "led_erros": 0, "inj_filtrados": 0, "inj_erros": 0}
 
-# ---- teVirtualMIDI ----
+# ---- BcdMidi.dll (porta virtual pelo MIDI do Windows) ----
 # A falha de carga e TRATADA, e nao propagada, por duas razoes independentes:
 #  (1) o executavel e empacotado com --noconsole. Uma excecao aqui mataria o processo
 #      ANTES de qualquer linha de log, e o usuario nao teria como descobrir por que os
 #      controles nao funcionam - a unica pista seria o processo nao existir. Com o
 #      tratamento, run() escreve o motivo no bridge.log e devolve codigo de erro;
-#  (2) e o que deixa o `--autoteste` rodar numa maquina SEM a biblioteca. As funcoes
+#  (2) e o que deixa o `--autoteste` rodar numa maquina SEM a DLL. As funcoes
 #      que o autoteste exercita (CIN_LEN, midi_to_usb, injetar_pacote) nao precisam
-#      dela: o injetor troca `tevm` por um gravador.
+#      dela: o injetor troca `bcdmidi` por um gravador.
 # CALLBACK fica FORA do try de proposito: C.CFUNCTYPE e do proprio ctypes e nao
 # depende de DLL nenhuma, e _cb precisa existir sempre.
-_tevm_erro = None
+_bcdmidi_erro = None
+
+# Onde o BcdMidi.dll (e a Windows.Devices.Midi2.dll da Microsoft, ao lado dele)
+# moram de verdade. Empacotado (--onefile, runtime_tmpdir=None), e o diretorio do
+# payload descompactado - sys._MEIPASS, que NAO e o diretorio do .exe -, arranjo
+# medido e decidido na Tarefa 2 (ver poc/BCD3000Bridge.spec). Fora do pacote
+# (desenvolvimento), e native/bcdmidi/ ao lado deste repositorio, que e onde
+# native/bcdmidi/build.bat deixa a DLL.
+if getattr(sys, "frozen", False):
+    _BCDMIDI_DIR = sys._MEIPASS
+    # ADITIVO: esta chamada usa AddDllDirectory, que NAO mexe no
+    # SetDllDirectory. O bootloader do PyInstaller ja chamou
+    # SetDllDirectoryW(_MEIPASS) antes de este modulo rodar - a Tarefa 2 mediu
+    # que E ISSO que torna a Windows.Devices.Midi2.dll da Microsoft achavel de
+    # dentro do pacote -, mas essa chamada do bootloader NAO E DOCUMENTADA e
+    # guarda exatamente UM diretorio: qualquer biblioteca carregada depois que
+    # chame SetDllDirectory para o proprio uso apaga _MEIPASS em silencio, e a
+    # criacao da porta passa a falhar sem erro nenhum que aponte para a causa.
+    # add_dll_directory nao tem esse modo de falha. Chamada ANTES da primeira
+    # carga do BcdMidi.dll, como a Tarefa 2 recomenda. Guardada por
+    # getattr(sys, "frozen") porque sys._MEIPASS so existe dentro do pacote.
+    os.add_dll_directory(_BCDMIDI_DIR)
+else:
+    _BCDMIDI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "native", "bcdmidi")
+
+# use_last_error=True NAO e enfeite e nao pode ser removido: e o que faz
+# C.get_last_error() devolver o erro DESTA biblioteca e nao o de uma chamada
+# anterior de outra WinDLL qualquer. Medido em 2026-08-01, com duas WinDLL de
+# kernel32 lado a lado: uma chamada por uma DLL carregada SEM a opcao deixou
+# C.get_last_error() em 2 (o valor de uma chamada anterior, de outra DLL)
+# enquanto o GetLastError do sistema dizia 3. NOTA para quem le isto depois da
+# troca de biblioteca: o BcdMidi.dll NAO reporta os seus proprios erros pelo
+# GetLastError do Windows - eles vem pelos dois ponteiros de saida de
+# BcdMidiCreatePort (errOut, hrOut), lidos direto do retorno da chamada em
+# criar_porta(). C.get_last_error() portanto NAO e a fonte do diagnostico da
+# porta neste arquivo; a opcao fica mesmo assim porque as outras WinDLL deste
+# processo (o _k32 acima, e as tres do winusb_bcd) dependem dela para os
+# proprios erros delas.
 try:
-    tevm = C.WinDLL(r"C:\Windows\System32\teVirtualMIDI64.dll")
-    tevm.virtualMIDICreatePortEx2.restype = C.c_void_p
-    tevm.virtualMIDICreatePortEx2.argtypes = [W.LPCWSTR, C.c_void_p, C.c_void_p, W.DWORD, W.DWORD]
-    tevm.virtualMIDIClosePort.argtypes = [C.c_void_p]
-    tevm.virtualMIDISendData.argtypes = [C.c_void_p, C.POINTER(C.c_ubyte), W.DWORD]
-    tevm.virtualMIDISendData.restype = W.BOOL
+    bcdmidi = C.WinDLL(os.path.join(_BCDMIDI_DIR, "BcdMidi.dll"), use_last_error=True)
+    bcdmidi.BcdMidiCreatePort.restype = C.c_void_p
+    bcdmidi.BcdMidiCreatePort.argtypes = [W.LPCWSTR, C.c_void_p, C.c_void_p,
+                                          C.POINTER(C.c_uint), C.POINTER(C.c_long)]
+    bcdmidi.BcdMidiClosePort.argtypes = [C.c_void_p]
+    bcdmidi.BcdMidiSend.argtypes = [C.c_void_p, C.POINTER(C.c_ubyte), W.DWORD]
+    bcdmidi.BcdMidiSend.restype = C.c_int
+    bcdmidi.BcdMidiErrorText.argtypes = [C.c_uint]
+    bcdmidi.BcdMidiErrorText.restype = C.c_char_p
 except OSError as _e:
-    tevm = None
-    _tevm_erro = str(_e)
-CALLBACK = C.CFUNCTYPE(None, C.c_void_p, C.POINTER(C.c_ubyte), W.DWORD, C.c_void_p)
-FLAGS_BOTH_PARSE = 12 | 1
+    bcdmidi = None
+    _bcdmidi_erro = str(_e)
+
+# A CALLBACK de recepcao tem 3 argumentos - contrato de
+# native/bcdmidi/bcdmidi.h (BcdMidiRecvCb): (user, bytes, count). O ponteiro
+# `bytes` so vale durante a chamada, por isso rx_callback copia os bytes antes
+# de devolver o controle.
+CALLBACK = C.CFUNCTYPE(None, C.c_void_p, C.POINTER(C.c_ubyte), C.c_uint)
 
 if3 = None  # handle da IF3 do aparelho (None quando desconectado)
 dev = None  # pacote opaco de handles para close_dev (None quando desconectado)
@@ -310,19 +355,27 @@ dev = None  # pacote opaco de handles para close_dev (None quando desconectado)
 port_atual = None
 
 # Serializa a escrita de LED contra o fechamento dos handles do aparelho. O
-# callback da teVirtualMIDI roda em outro thread; sem esta trava, o fechamento
-# poderia acontecer entre o `h = if3` do callback e o WritePipe dele, e o WritePipe
-# usaria um valor de handle que o Windows ja pode ter reciclado.
+# callback do BcdMidi.dll roda numa thread do proprio servico do MIDI do
+# Windows; sem esta trava, o fechamento poderia acontecer entre o `h = if3` do
+# callback e o WritePipe dele, e o WritePipe usaria um valor de handle que o
+# Windows ja pode ter reciclado.
 _led_lock = threading.Lock()
 
-# Serializa a INJECAO na porta virtual e protege a troca de port_atual. Duas
-# razoes:
+# Serializa a INJECAO na porta virtual e protege a troca de port_atual. Tres
+# razoes, a terceira nova nesta troca de biblioteca:
 #  (1) sao duas fontes possiveis de injecao - o laco de leitura do aparelho e o
 #      thread do canal - e ordenacao de mensagens MIDI por porta e desejavel;
 #  (2) o fechamento da porta no fim do processo nao pode acontecer no meio de um
-#      virtualMIDISendData de outro thread.
-# NUNCA chamar virtualMIDIClosePort segurando esta trava junto de _led_lock: o
-# close espera pelo callback de LED, e o callback espera por _led_lock.
+#      BcdMidiSend de outro thread - o proprio DLL NAO serializa isso: ver
+#      bcdmidi.h, "It is NOT safe to call [BcdMidiSend] while another thread is
+#      inside BcdMidiClosePort on the same handle: close frees the port". Essa
+#      garantia e responsabilidade NOSSA, e e o que esta trava entrega, presa
+#      durante toda a chamada de BcdMidiSend e nao so na leitura de port_atual;
+#  (3) BcdMidiSend BLOQUEIA - entrega a mensagem para a thread da porta e
+#      espera o servico aceitar, ao contrario do envio da biblioteca anterior,
+#      que so copiava. Ver a nota de latencia em injetar_pacote.
+# NUNCA chamar BcdMidiClosePort segurando esta trava junto de _led_lock: o
+# close espera pelo callback de LED em voo, e o callback espera por _led_lock.
 _port_lock = threading.Lock()
 
 def midi_to_usb(msg):
@@ -351,10 +404,24 @@ def injetar_pacote(pkt):
     segundo teste.
 
     Devolve True se injetou DE FATO - ou seja, se a porta virtual aceitou os bytes.
-    Antes devolvia True depois de CHAMAR virtualMIDISendData, descartando o retorno
-    dela, e com isso o contador de injetados contava TENTATIVA e nao sucesso. Isso
-    importa porque `injetados` e coluna de criterio de portao: uma porta que parasse
-    de aceitar ficaria indistinguivel de uma sessao perfeita.
+    Antes devolvia True depois de CHAMAR o envio da biblioteca anterior, descartando
+    o retorno dela, e com isso o contador de injetados contava TENTATIVA e nao
+    sucesso. Isso importa porque `injetados` e coluna de criterio de portao: uma
+    porta que parasse de aceitar ficaria indistinguivel de uma sessao perfeita.
+    BcdMidiSend preserva essa mesma propriedade: nao-zero significa que os bytes
+    SAIRAM, nao que foram so enfileirados - ver bcdmidi.h.
+
+    NOTA DE LATENCIA (Tarefa 4): BcdMidiSend BLOQUEIA - entrega a mensagem a thread
+    da porta e espera o servico aceitar, ao contrario do envio da biblioteca
+    anterior, que so copiava e devolvia na hora. Isso significa que _port_lock fica preso pela
+    duracao de uma volta real entre threads, e nao mais de uma copia. Medido na
+    Tarefa 3 (via WinMM, contaminado pela granularidade do polling do proprio
+    self-test): 31 ms e 16 ms para a mensagem chegar - a duracao do PROPRIO
+    BcdMidiSend nunca foi isolada e pode ser bem menor. Mantido dentro da trava de
+    proposito: e a unica coisa que torna o fechamento da porta seguro contra este
+    envio (ver o comentario de _port_lock). Se a fila de LEDs do aparelho um dia
+    virar fonte de rajadas SOBRE este mesmo caminho, o custo cumulativo dessas
+    esperas passa a valer medir - hoje o caminho de LED nao chama injetar_pacote.
     """
     if len(pkt) < RELAY_PACKET_BYTES:
         _cont["inj_filtrados"] += 1
@@ -372,14 +439,14 @@ def injetar_pacote(pkt):
         p = port_atual
         if p is None:
             return False
-        enviado = bool(tevm.virtualMIDISendData(p, arr, len(m)))
+        enviado = bool(bcdmidi.BcdMidiSend(p, arr, len(m)))
     # O log fica FORA da trava: injetar_pacote roda no caminho dos controles, e
     # nenhuma escrita em arquivo precisa segurar a trava da porta.
     if not enviado:
         _cont["inj_erros"] += 1
         if _cont["inj_erros"] <= 5 or _cont["inj_erros"] % 500 == 0:
             log(f"injecao na porta virtual falhou #{_cont['inj_erros']} "
-                f"(virtualMIDISendData devolveu falso; a porta ainda existe?)")
+                f"(BcdMidiSend devolveu falso; a porta ainda existe?)")
     return enviado
 
 def _escrever_led_no_aparelho(pkt):
@@ -413,8 +480,8 @@ def _escrever_led_no_aparelho(pkt):
 def _enfileirar_led_para_o_canal(pkt):
     """Poe o LED na fila do canal SEM NUNCA BLOQUEAR.
 
-    O callback da teVirtualMIDI roda num thread da biblioteca; prende-lo prenderia
-    o software de DJ. Fila cheia significa que o driver parou de drenar o canal por
+    O callback do BcdMidi.dll roda numa thread do servico do MIDI do Windows;
+    prende-lo prenderia o software de DJ. Fila cheia significa que o driver parou de drenar o canal por
     segundos - descartar e a saida certa, e o contador diz que aconteceu.
 
     QUAL pacote se descarta importa, e a versao anterior descartava o ERRADO. Com a
@@ -438,15 +505,29 @@ def _enfileirar_led_para_o_canal(pkt):
     # o thread do canal, que drena em paralelo: ele pode ter esvaziado a fila entre o
     # put e o get (Empty), ou tornado a enche-la antes do segundo put (Full). Nos dois
     # casos a saida certa e desistir DESTE pacote sem levantar - o callback nunca pode
-    # propagar excecao para dentro da teVirtualMIDI.
+    # propagar excecao para dentro do BcdMidi.dll.
     try:
         _fila_led.get_nowait()
         _fila_led.put_nowait(pkt)
     except (queue.Empty, queue.Full):
         pass
 
-def rx_callback(port, data_ptr, length, inst):
-    """LEDs vindos do software de DJ -> aparelho, direto ou pelo canal."""
+def rx_callback(user, data_ptr, length):
+    """LEDs vindos do software de DJ -> aparelho, direto ou pelo canal.
+
+    TRES argumentos, nao quatro: o contrato de BcdMidiRecvCb (bcdmidi.h) e
+    (user, bytes, count) - o `port` e o `inst` da biblioteca anterior nao tem
+    equivalente aqui. `user` e o mesmo ponteiro passado em BcdMidiCreatePort
+    (None, aqui - nao precisamos dele) e NUNCA usado para achar a porta: o
+    codigo abaixo so fala com o aparelho e com a fila do canal.
+
+    RODA NUMA THREAD DO SERVICO DO MIDI DO WINDOWS, nao numa thread deste
+    programa (bcdmidi.h e explicito quanto a isso). Por isso o corpo inteiro
+    esta dentro do try: uma excecao Python nao pode atravessar a fronteira de
+    volta para C - ela seria, na melhor das hipoteses, impressa no lugar errado
+    e, na pior, derrubaria o processo do servico. Ela e engolida e vira uma
+    linha de log, nunca escapa daqui.
+    """
     try:
         pkt = midi_to_usb(bytes(bytearray(data_ptr[:length])))
         if not pkt:
@@ -458,14 +539,124 @@ def rx_callback(port, data_ptr, length, inst):
     except Exception as e:
         log(f"callback de LED falhou: {e}")
 
+# Guardada em globals do modulo, que vivem tanto quanto o processo: o objeto
+# CFUNCTYPE tem de sobreviver por TODO o tempo em que a porta existir. Se a
+# unica referencia fosse local a alguma funcao, o coletor de lixo do Python
+# poderia recolher o trampolim enquanto o servico do MIDI do Windows ainda
+# tem o ponteiro - e a proxima mensagem recebida chamaria memoria ja liberada.
 _cb = CALLBACK(rx_callback)
 
 def criar_porta():
-    """Cria a porta virtual. None se o nome ja estiver em uso."""
-    if tevm is None:
-        return None
-    p = tevm.virtualMIDICreatePortEx2(PORT_NAME, _cb, None, 65535, FLAGS_BOTH_PARSE)
-    return p if p else None
+    """Cria a porta virtual. Devolve (porta, categoria de erro, HRESULT).
+
+    A porta e None quando a criacao falha, e ai o segundo e o terceiro item sao
+    os dois ponteiros de saida de BcdMidiCreatePort (bcdmidi.h): a CATEGORIA e o
+    HRESULT completo. Sem eles esta funcao devolveria so `None` e o motivo seria
+    jogado fora; o custo de jogar fora o motivo, com a biblioteca anterior, foi
+    uma hora de diagnostico em 2026-08-01, procurando um conflito de nome que nao
+    existia.
+
+    NAO E C.get_last_error(): o BcdMidi.dll nao reporta os proprios erros pelo
+    GetLastError do Windows. Os dois valores saem DIRETO do retorno desta
+    chamada, nos dois ponteiros passados por referencia - e por isso nao ha
+    "linha imediatamente seguinte" a se preocupar aqui: os valores ja estao nas
+    variaveis Python antes de qualquer outra chamada ctypes ter chance de
+    escrever por cima de nada.
+
+    Em sucesso os dois sao 0, exatamente como a DLL promete (bcdmidi.h: "On
+    success both are set to 0 ... Neither is ever left holding a stale value").
+    """
+    if bcdmidi is None:
+        return None, 0, 0
+    err = C.c_uint(0)
+    hr = C.c_long(0)
+    p = bcdmidi.BcdMidiCreatePort(PORT_NAME, _cb, None, C.byref(err), C.byref(hr))
+    return p, err.value, hr.value
+
+# Categorias com causa NOMEADA por ESTE contrato (native/bcdmidi/bcdmidi.h) -
+# a nossa propria enumeracao, e nao mais codigos do GetLastError de uma DLL de
+# terceiro. Diferente da tabela antiga (so tres codigos tinham causa medida, o
+# resto era desconhecido), aqui as CINCO categorias de falha tem redacao propria:
+# o cabecalho da DLL documenta o que cada uma significa, entao nao ha "chute"
+# em nomea-las. So a excecao (6) e o "fora do enum" continuam sem causa unica.
+NOME_DA_CATEGORIA = {
+    1: "kBcdMidiServiceMissing",
+    2: "kBcdMidiTransportMissing",
+    3: "kBcdMidiCreateFailed",
+    4: "kBcdMidiOpenFailed",
+    5: "kBcdMidiBadArgument",
+    6: "kBcdMidiException",
+}
+
+def _fmt_hr(hr):
+    """O HRESULT como 8 digitos hexadecimais, sem depender do sinal do long.
+
+    ctypes entrega um c_long com sinal; um HRESULT de falha tem o bit 31 ligado
+    e chega como um Python int NEGATIVO (ex.: -2147023436). O `& 0xFFFFFFFF`
+    devolve a mesma representacao de 32 bits sem sinal - Python faz aritmetica
+    de precisao arbitraria, entao o AND bit a bit com uma mascara de 32 bits
+    reproduz o complemento de dois corretamente, para positivo ou negativo.
+    """
+    return f"0x{hr & 0xFFFFFFFF:08X}"
+
+def _diagnostico_falha_da_porta(erro, hr):
+    """A linha de log de uma falha de criacao da porta, escolhida pela CATEGORIA e
+    pelo HRESULT reais.
+
+    ESTA FUNCAO EXISTE POR UM DEFEITO MEDIDO no hardware em 2026-08-01, com a
+    biblioteca anterior: a mensagem unica que existia afirmava conflito de nome
+    sem nunca ter olhado o codigo de erro, e a causa medida era outra
+    inteiramente. Uma mensagem que CHUTA a causa e pior que uma que diz "nao
+    sei", porque uma hora de busca foi gasta acreditando nela - e essa e a razao
+    de o ramo final aqui embaixo NAO inventar nada.
+
+    TRES RAMOS, o mesmo formato de antes:
+      - causa NOMEADA (categorias 1 a 5 do nosso proprio enum - bcdmidi.h);
+      - EXCECAO (categoria 6): a causa e o HRESULT completo, que e tudo o que
+        BcdMidi.dll sabe dizer sobre uma excecao do WinRT - ver bcdmidi.h;
+      - DESCONHECIDO: qualquer categoria fora do enum. Nao inventa nada.
+
+    O NUMERO DA CATEGORIA E O HRESULT SAEM EM TODOS OS RAMOS, sem excecao -
+    "erro {erro}" primeiro (o formato que o autoteste confere), e o HRESULT
+    sempre impresso por extenso, mesmo quando e 0 (bcdmidi.h: hrOut e sempre
+    escrito, mesmo que seja 0 quando a falha nao tem HRESULT). Foi o numero nao
+    sair em ramo nenhum que custou o que custou da vez passada.
+    """
+    nome = NOME_DA_CATEGORIA.get(erro)
+    hexr = _fmt_hr(hr)
+    if erro == 1:      # kBcdMidiServiceMissing
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): o "
+                f"servico MIDI do Windows nao esta disponivel nesta maquina. Confira "
+                f"se o servico 'Windows MIDI Services' (MidiSrv) esta instalado e "
+                f"rodando (services.msc). HRESULT {hexr}. Continuo tentando a cada 1 s")
+    if erro == 2:      # kBcdMidiTransportMissing
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): o "
+                f"transporte de dispositivo virtual do MIDI do Windows nao esta "
+                f"disponivel nesta maquina. HRESULT {hexr}. Continuo tentando a cada 1 s")
+    if erro == 3:      # kBcdMidiCreateFailed
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): o "
+                f"servico MIDI do Windows nao devolveu um dispositivo virtual. Pode ser "
+                f"o defeito conhecido do Windows (microsoft/MIDI, issue #1047), que so "
+                f"um reinicio da maquina resolve, ou o servico ainda subindo. HRESULT "
+                f"{hexr}. Continuo tentando a cada 1 s")
+    if erro == 4:      # kBcdMidiOpenFailed
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): a "
+                f"conexao com o dispositivo virtual nao abriu. HRESULT {hexr}. "
+                f"Continuo tentando a cada 1 s")
+    if erro == 5:      # kBcdMidiBadArgument
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): "
+                f"argumento invalido para BcdMidiCreatePort - isto e defeito deste "
+                f"programa, nao do ambiente do usuario. HRESULT {hexr}. Continuo "
+                f"tentando a cada 1 s")
+    if erro == 6:      # kBcdMidiException
+        return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}, {nome}): uma "
+                f"excecao do WinRT aconteceu dentro do BcdMidi.dll. O HRESULT {hexr} e "
+                f"a causa completa - e o unico dado que a DLL tem para uma excecao, "
+                f"procure esse valor. Continuo tentando a cada 1 s")
+    return (f"nao consegui criar a porta '{PORT_NAME}' (erro {erro}): motivo "
+            f"DESCONHECIDO. Categoria fora do contrato de BcdMidi.dll (bcdmidi.h so "
+            f"define 0 a 6); nao tenho causa medida para ela e nao vou adivinhar uma. "
+            f"HRESULT {hexr}. Continuo tentando a cada 1 s")
 
 def abrir_porta_uma_vez():
     """Cria a porta virtual e a publica. Insiste ate conseguir.
@@ -478,37 +669,56 @@ def abrir_porta_uma_vez():
     Insistir em vez de desistir importa numa situacao concreta: um BcdAsio.dll
     ANTIGO carregado num software de DJ ja aberto ainda cria a porta com este nome.
     Nesse caso esperamos ele soltar, em vez de morrer e deixar o usuario sem
-    controles para sempre.
+    controles para sempre. Insistir tambem cobre o caso de o servico MIDI do
+    Windows ainda estar subindo, ou preso pelo defeito conhecido
+    microsoft/MIDI #1047: o laco nao desiste, entao um reinicio da maquina ou do
+    servico COM este programa no ar faz a porta nascer sozinha na volta seguinte.
+
+    A falha vai ao log na PRIMEIRA vez e sempre que a CATEGORIA OU O HRESULT
+    MUDAM, e nao uma vez para sempre. Repetir o mesmo par ~1x/s encheria o log
+    sem informacao nova, mas uma MUDANCA e informacao: por exemplo, quando o
+    servico MIDI do Windows termina de subir com o programa no ar. So a
+    primeira linha faria o log continuar acusando uma causa que ja mudou.
     """
     global port_atual
-    falhas = 0
+    ultimo_par = None      # None e sentinela: nenhum par (erro, hr) e None, entao
+                           # a primeira falha SEMPRE registra
     while True:
-        p = criar_porta()
+        p, erro, hr = criar_porta()
         if p:
             with _port_lock:
                 port_atual = p
             log(f"porta virtual '{PORT_NAME}' criada")
             return
-        falhas += 1
-        if falhas == 1:
-            log(f"porta '{PORT_NAME}' em uso por outro programa (um BcdAsio.dll "
-                f"antigo num software de DJ aberto?); continuo tentando a cada 1 s")
+        par = (erro, hr)
+        if par != ultimo_par:
+            ultimo_par = par
+            log(_diagnostico_falha_da_porta(erro, hr))
         time.sleep(1)
 
 def encerrar_porta():
     """Fecha a porta virtual. SO no encerramento do processo.
 
     Copiar, ZERAR e so entao fechar. Assim um injetor concorrente ou ja terminou
-    (a trava garante) ou ve None e desiste. E virtualMIDIClosePort e chamada FORA
-    das travas: ela espera pelo callback de LED em voo, e o callback espera por
-    _led_lock - chamar de dentro seria travamento mutuo.
+    (a trava garante) ou ve None e desiste. E BcdMidiClosePort e chamada FORA das
+    travas, por DUAS razoes agora:
+      (1) ela espera pelo callback de LED em voo, e o callback espera por
+          _led_lock - chamar de dentro de _led_lock seria travamento mutuo;
+      (2) ela espera pelo callback de RECEPCAO em voo tambem (bcdmidi.h:
+          "Always returns, even if the service stops answering"), e esse
+          callback (rx_callback) toma _led_lock por dentro. Chamar o close
+          segurando _led_lock faria o close esperar por um callback que esta
+          esperando por quem o chamou - a DLL limita essa espera a cerca de 1 s,
+          entao o pior caso hoje e um atraso e nao uma trava permanente, mas a
+          regra continua sendo: NUNCA close com _led_lock (nem com _port_lock)
+          seguro.
     """
     global port_atual
     with _port_lock:
         p = port_atual
         port_atual = None
     if p:
-        tevm.virtualMIDIClosePort(p)
+        bcdmidi.BcdMidiClosePort(p)
 
 def soltar_aparelho():
     """Zera if3 e dev e fecha os handles do aparelho.
@@ -678,15 +888,14 @@ def servidor_do_canal():
 def run():
     global if3, dev
     log("=== BCD3000 Bridge iniciando ===")
-    if tevm is None:
-        # Sem a biblioteca nao ha porta virtual, e sem porta virtual este programa
+    if bcdmidi is None:
+        # Sem a DLL nao ha porta virtual, e sem porta virtual este programa
         # nao tem nada a fazer: o canal com o driver so existe para levar controles
         # ATE a porta. Sair com o motivo escrito e melhor que insistir num laco que
         # nunca vai conseguir nada, e MUITO melhor que morrer sem log.
-        log(f"FATAL: teVirtualMIDI64.dll nao carregou ({_tevm_erro}). Instale o "
-            f"teVirtualMIDI (o mesmo pacote do loopMIDI serve) e inicie de novo - "
-            f"sem ela nao existe porta MIDI virtual e os controles nao chegam ao "
-            f"software de DJ")
+        log(f"FATAL: BcdMidi.dll nao carregou de '{_BCDMIDI_DIR}' ({_bcdmidi_erro}). "
+            f"Reinstale o programa - sem essa DLL nao existe porta MIDI virtual e os "
+            f"controles nao chegam ao software de DJ")
         return 1
     dev = None
     try:
@@ -767,7 +976,7 @@ def run():
 #
 #   python bridge_service.py --autoteste
 #
-# Roda SEM aparelho, SEM teVirtualMIDI e SEM canal, e nao escreve no bridge.log de
+# Roda SEM aparelho, SEM o BcdMidi.dll e SEM canal, e nao escreve no bridge.log de
 # verdade (o diretorio de log e desviado no topo do arquivo quando este argumento
 # esta presente).
 #
@@ -789,8 +998,8 @@ def _check(cond, o_que):
         _falhas += 1
         print(f"  FALHA: {o_que}")
 
-class _TevmGravador:
-    """Substituto de `tevm` que GRAVA em vez de injetar.
+class _BcdMidiGravador:
+    """Substituto de `bcdmidi` que GRAVA em vez de injetar.
 
     Sem ele nao se distingue "o filtro descartou" de "nao havia porta": as duas
     coisas fazem injetar_pacote() devolver False. Assinatura igual a da unica funcao
@@ -798,23 +1007,24 @@ class _TevmGravador:
     """
     def __init__(self):
         self.enviados = []
-    def virtualMIDISendData(self, port, arr, tam):
+    def BcdMidiSend(self, port, arr, tam):
         self.enviados.append(bytes(bytearray(arr[:tam])))
         return True
 
-class _TevmRecusando:
-    """Substituto de `tevm` cuja porta RECUSA tudo.
+class _BcdMidiRecusando:
+    """Substituto de `bcdmidi` cuja porta RECUSA tudo.
 
-    Existe por um motivo especifico: a virtualMIDISendData de verdade devolve BOOL, e
-    esse retorno era descartado. Sem este substituto, o unico caminho de falha de
-    injecao que existe no programa nao seria exercitado por nada - e caminho de
-    excecao nao exercitado e onde esta sessao ja achou cinco defeitos.
+    Existe por um motivo especifico: a BcdMidiSend de verdade devolve int (nao-zero
+    em sucesso), e esse retorno era descartado antes da Tarefa 9. Sem este
+    substituto, o unico caminho de falha de injecao que existe no programa nao
+    seria exercitado por nada - e caminho de excecao nao exercitado e onde esta
+    sessao ja achou cinco defeitos.
     """
-    def virtualMIDISendData(self, port, arr, tam):
-        return False
+    def BcdMidiSend(self, port, arr, tam):
+        return 0
 
 def autoteste():
-    global tevm, port_atual
+    global bcdmidi, port_atual
     print("== autoteste do bridge_service ==")
 
     # ---- 1. CIN_LEN: os 14 CINs definidos, UM POR UM ----
@@ -857,9 +1067,9 @@ def autoteste():
            "byte sem bit de status nao e mensagem MIDI")
 
     # ---- 3. injetar_pacote: o caminho UNICO de injecao, e os seus descartes ----
-    grav = _TevmGravador()
-    tevm_antes, porta_antes = tevm, port_atual
-    tevm = grav
+    grav = _BcdMidiGravador()
+    bcdmidi_antes, porta_antes = bcdmidi, port_atual
+    bcdmidi = grav
     port_atual = C.c_void_p(0x1234)     # sentinela: so precisa ser diferente de None
     try:
         # (a) caminho positivo, para os descartes significarem algo. CIN 9 = 3 bytes.
@@ -917,18 +1127,18 @@ def autoteste():
                f"os 4 descartes tem de contar em inj_filtrados, veio "
                f"{_cont['inj_filtrados'] - filtrados_antes}")
 
-        # (5) FALHA DE INJECAO: a porta existe e virtualMIDISendData devolve FALSO.
+        # (5) FALHA DE INJECAO: a porta existe e BcdMidiSend devolve ZERO.
         #     Antes desta rodada o retorno era DESCARTADO e o pacote contava como
         #     injetado. Como `injetados` e coluna de criterio de portao, uma porta que
         #     parasse de aceitar ficava indistinguivel de uma sessao perfeita.
         erros_antes = _cont["inj_erros"]
-        tevm = _TevmRecusando()
+        bcdmidi = _BcdMidiRecusando()
         _check(not injetar_pacote(b"\x09\x90\x40\x7F"),
                "porta que recusa a injecao tem de fazer injetar_pacote devolver False")
         _check(_cont["inj_erros"] == erros_antes + 1,
                f"e tem de contar em inj_erros, veio "
                f"{_cont['inj_erros'] - erros_antes}")
-        tevm = grav
+        bcdmidi = grav
 
         # (6) SEM PORTA nada e injetado, nem mensagem boa. E a guarda que protege a
         #     janela entre encerrar_porta() e o fim do processo.
@@ -936,7 +1146,7 @@ def autoteste():
         _check(not injetar_pacote(b"\x09\x90\x40\x7F"),
                "sem porta virtual, nada e injetado")
     finally:
-        tevm, port_atual = tevm_antes, porta_antes
+        bcdmidi, port_atual = bcdmidi_antes, porta_antes
 
     # ---- 4. as constantes de contrato com o lado C++ ----
     # Nao provam o outro lado (isso e o arnes_canal.py), mas apanham um dedo errado.
@@ -948,6 +1158,221 @@ def autoteste():
            "buffer do pipe multiplo do pacote")
     _check(EVENT_NAME == "Global\\" + EVENT_NAME_LOCAL,
            "o nome global e o local com o prefixo de escopo")
+
+    # ---- 5. o diagnostico de falha da criacao da porta ----
+    # A biblioteca mudou (Tarefa 4): as categorias agora sao a NOSSA propria
+    # enumeracao (native/bcdmidi/bcdmidi.h), nao mais codigos do GetLastError de
+    # uma DLL de terceiro, e toda falha chega acompanhada de um HRESULT (0
+    # quando nao ha um).
+    #
+    # Defeito medido no hardware em 2026-08-01, com a biblioteca anterior: a
+    # UNICA mensagem que existia afirmava conflito de nome, o erro real nao
+    # tinha nada a ver com isso, e o NUMERO nao aparecia em lugar nenhum. Custou
+    # uma hora procurando um programa aberto que nao existia.
+    #
+    # O numero e conferido como "erro {n}" e nao como "{n}" solto, e a diferenca
+    # importa: '3' e '0' aparecem em "BCD3000", entao um `str(erro) in msg` para
+    # o erro 3 seria VERDADEIRO mesmo com a mensagem sem numero nenhum - uma
+    # verificacao incapaz de falhar. O lado esquerdo de cada comparacao e
+    # literal deste teste, o direito sai da funcao.
+
+    # ---- 5.0 PINAGEM de NOME_DA_CATEGORIA contra BcdMidiErrorText ----
+    # Revisao da Tarefa 4, achado 1: NOME_DA_CATEGORIA e um dicionario escrito
+    # a mao, e bcdmidi.h:135 ja tem BcdMidiErrorText fazendo exatamente esse
+    # mapeamento (categoria -> texto) dentro da DLL. Duas fontes independentes
+    # descrevendo o mesmo enum de seis valores e a MESMA forma da familia de
+    # defeitos "instance 14" que a Decisao D1 existe para evitar: uma sentenca
+    # corrigida num lugar e esquecida no outro.
+    #
+    # A FONTE DA VERDADE sobre QUAIS categorias sao conhecidas e a propria DLL,
+    # nao este dicionario - por isso o dicionario NAO foi apagado (ele so da um
+    # ROTULO/simbolo em portugues-de-programador para cada numero, o que
+    # BcdMidiErrorText nao fornece: ela devolve prosa em ingles, nunca o nome
+    # do simbolo C), mas ele e VERIFICADO contra a DLL sempre que ela estiver
+    # carregada. Se um dia bcdmidi.h ganhar uma setima categoria sem que
+    # NOME_DA_CATEGORIA seja atualizado (ou o inverso: o dicionario ganhar uma
+    # entrada que a DLL nao conhece), estas verificacoes acusam a divergencia
+    # em vez de deixar as duas fontes derivarem em silencio.
+    #
+    # So roda com bcdmidi carregado de verdade - e nao um requisito novo: e a
+    # MESMA regra que ja vale para o resto do arquivo ("as funcoes que o
+    # autoteste exercita nao precisam da DLL"). Sem a DLL, este bloco e pulado
+    # e o restante do bloco 5 (que so chama _diagnostico_falha_da_porta, e
+    # NUNCA bcdmidi.BcdMidiErrorText) continua rodando normalmente.
+    if bcdmidi is not None:
+        textos_conhecidos = {}
+        for cat in sorted(NOME_DA_CATEGORIA):
+            texto = bcdmidi.BcdMidiErrorText(cat).decode("ascii", "replace")
+            textos_conhecidos[cat] = texto
+            # Toda categoria que O DICIONARIO diz conhecer tem de vir da DLL
+            # com texto REAL, nao com a frase generica de fallback. Se
+            # NOME_DA_CATEGORIA um dia tiver uma entrada que a DLL nao
+            # reconhece (erro de digitacao no numero, por exemplo), a DLL
+            # devolve "unknown error" e este check acusa a divergencia.
+            _check("unknown error" not in texto,
+                   f"BcdMidiErrorText({cat}) devolveu texto de fallback "
+                   f"'unknown error', mas NOME_DA_CATEGORIA diz que {cat} e "
+                   f"{NOME_DA_CATEGORIA[cat]!r} - dicionario e DLL "
+                   f"divergiram: {texto!r}")
+        # Nao-vazio e DISTINTO para cada categoria conhecida - um copy-paste
+        # dentro do switch de bcdmidi.cpp (duas categorias com o mesmo texto)
+        # nao quebraria nenhum outro teste deste arquivo, porque nenhum outro
+        # teste olha para o texto da DLL isoladamente.
+        _check(all(textos_conhecidos.values()),
+               "BcdMidiErrorText nao pode devolver texto vazio para nenhuma "
+               "categoria conhecida")
+        _check(len(set(textos_conhecidos.values())) == len(textos_conhecidos),
+               f"BcdMidiErrorText tem de devolver texto DISTINTO para cada "
+               f"categoria conhecida, veio {textos_conhecidos!r}")
+        # E o INVERSO: um numero que o dicionario NAO conhece (uma a mais que
+        # a maior chave) tem de vir com o texto de fallback da DLL. Se a DLL
+        # um dia ganhar uma setima categoria REAL neste numero exato sem que
+        # o dicionario seja atualizado, e aqui que a divergencia aparece.
+        _proximo_desconhecido = max(NOME_DA_CATEGORIA) + 1
+        texto_desconhecido = bcdmidi.BcdMidiErrorText(_proximo_desconhecido).decode(
+            "ascii", "replace")
+        _check("unknown error" in texto_desconhecido,
+               f"categoria {_proximo_desconhecido} (uma a mais que o "
+               f"dicionario conhece, {sorted(NOME_DA_CATEGORIA)}) tem de vir "
+               f"como 'unknown error' da DLL - se nao vier, a DLL ganhou uma "
+               f"categoria que o dicionario nao tem: {texto_desconhecido!r}")
+
+    for codigo in (1, 2, 3, 4, 5, 6, 0, 7, 87, 1306):
+        msg = _diagnostico_falha_da_porta(codigo, 0)
+        _check(f"erro {codigo}" in msg,
+               f"o codigo {codigo} tem de sair na mensagem como 'erro {codigo}': {msg!r}")
+
+    # (a) 1, kBcdMidiServiceMissing: causa NOMEADA, o servico MIDI do Windows -
+    #     e NAO a biblioteca substituida. Esta e a verificacao que a Tarefa 4
+    #     pede por nome.
+    m1 = _diagnostico_falha_da_porta(1, 0)
+    _check("kBcdMidiServiceMissing" in m1, f"1 tem de sair nomeado: {m1!r}")
+    _check("MIDI do Windows" in m1, f"1 tem de nomear o servico MIDI do Windows: {m1!r}")
+    _check("loopMIDI" not in m1, f"1 NAO pode mencionar loopMIDI: {m1!r}")
+    _check("Tobias" not in m1, f"1 NAO pode mencionar Tobias: {m1!r}")
+
+    # (b) 6, kBcdMidiException: a causa e o HRESULT, e SO ele - bcdmidi.h diz
+    #     que e tudo o que a DLL sabe sobre uma excecao do WinRT. O HRESULT tem
+    #     de aparecer por extenso (8 digitos hex), nao so a categoria - a outra
+    #     verificacao que a Tarefa 4 pede por nome.
+    m6 = _diagnostico_falha_da_porta(6, 0x80040154)   # REGDB_E_CLASSNOTREG
+    _check("kBcdMidiException" in m6, f"6 tem de sair nomeado: {m6!r}")
+    _check("0x80040154" in m6,
+           f"6 tem de imprimir o HRESULT completo, nao so a categoria: {m6!r}")
+    # E o HRESULT sai mesmo quando e zero (bcdmidi.h: hrOut e sempre escrito,
+    # inclusive com 0 quando a falha nao tem um) - nao vira ausencia silenciosa.
+    m6b = _diagnostico_falha_da_porta(6, 0)
+    _check("0x00000000" in m6b,
+           f"6 com HRESULT zero ainda tem de imprimir o HRESULT por extenso: {m6b!r}")
+
+    # _fmt_hr tem de recuperar os 32 bits sem sinal de um c_long NEGATIVO - o
+    # jeito que ctypes realmente entrega um HRESULT de falha (bit 31 ligado).
+    # Construido com C.c_long() e nao a mao: deixar o proprio ctypes fazer a
+    # conversao de complemento de dois evita erro de aritmetica neste teste.
+    _hr_timeout = C.c_long(0x800705B4).value   # HRESULT_FROM_WIN32(ERROR_TIMEOUT)
+    _check(_hr_timeout < 0, f"pre-condicao do teste: o c_long tem de vir negativo, veio {_hr_timeout}")
+    _check(_fmt_hr(_hr_timeout) == "0x800705B4",
+           f"_fmt_hr tem de recuperar 0x800705B4 de um c_long negativo, veio "
+           f"{_fmt_hr(_hr_timeout)!r} a partir de {_hr_timeout}")
+
+    # (c) NENHUM codigo, em NENHUMA categoria, pode mencionar a biblioteca
+    # substituida - o proprio criterio de "Produces" da Tarefa 4. Cobre as seis
+    # categorias do contrato mais tres valores fora dele.
+    for codigo in (0, 1, 2, 3, 4, 5, 6, 7, 87, 1306):
+        msg = _diagnostico_falha_da_porta(codigo, 0)
+        _check("loopMIDI" not in msg,
+               f"{codigo} NAO pode mencionar loopMIDI - biblioteca substituida: {msg!r}")
+        _check("Tobias" not in msg, f"{codigo} NAO pode mencionar Tobias: {msg!r}")
+        _check("teVirtualMIDI" not in msg,
+               f"{codigo} NAO pode mencionar teVirtualMIDI: {msg!r}")
+
+    # (d) as outras tres causas nomeadas (2, 3, 4): redacao PROPRIA cada uma, e
+    #     o nome da categoria sai na mensagem.
+    m2 = _diagnostico_falha_da_porta(2, 0)
+    _check("kBcdMidiTransportMissing" in m2, f"2 tem de sair nomeado: {m2!r}")
+    _check("transporte" in m2, f"2 tem de falar do transporte: {m2!r}")
+    m3 = _diagnostico_falha_da_porta(3, 0)
+    _check("kBcdMidiCreateFailed" in m3, f"3 tem de sair nomeado: {m3!r}")
+    _check("1047" in m3, f"3 tem de citar o defeito conhecido microsoft/MIDI #1047: {m3!r}")
+    m4 = _diagnostico_falha_da_porta(4, 0)
+    _check("kBcdMidiOpenFailed" in m4, f"4 tem de sair nomeado: {m4!r}")
+    m5 = _diagnostico_falha_da_porta(5, 0)
+    _check("kBcdMidiBadArgument" in m5, f"5 tem de sair nomeado: {m5!r}")
+    _check("defeito deste programa" in m5,
+           f"5 e bug deste programa, nao do ambiente do usuario: {m5!r}")
+
+    # (e) qualquer categoria FORA do contrato (0 e "sem erro", nunca deveria
+    #     chegar aqui de verdade; 7+ nao existe no enum): NAO INVENTAR CAUSA.
+    #     Uma mensagem que chuta e o defeito que este bloco existe para
+    #     consertar, entao chutar num codigo novo seria reintroduzi-lo por
+    #     outra porta.
+    for codigo in (0, 7, 87, 1306):
+        msg = _diagnostico_falha_da_porta(codigo, 0)
+        _check("DESCONHECIDO" in msg, f"{codigo} tem de se declarar desconhecido: {msg!r}")
+
+    # (f) o HRESULT sai SEMPRE, em toda categoria conhecida, mesmo quando e 0.
+    for codigo in (1, 2, 3, 4, 5, 6):
+        msg = _diagnostico_falha_da_porta(codigo, 0)
+        _check("HRESULT" in msg and "0x00000000" in msg,
+               f"{codigo} tem de imprimir o HRESULT mesmo quando e 0: {msg!r}")
+
+    # ---- 6. duas propriedades do FONTE, que nenhum teste dinamico alcanca ----
+    # As duas abaixo so se verificam lendo o arquivo. A primeira porque o defeito que
+    # ela apanha depende de uma DLL de verdade responder; a segunda porque e sobre
+    # existir SITIO DE CHAMADA, e um teste que chama a funcao ele mesmo nao prova que
+    # o programa a chama - foi assim que uma tarefa desta pasta embarcou nove
+    # verificacoes com zero sitios de chamada lendo verde.
+    try:
+        fonte = open(os.path.abspath(__file__), "r", encoding="utf-8").read()
+    except Exception as e:
+        fonte = ""
+        _check(False, f"nao consegui ler o proprio fonte para as duas verificacoes "
+                      f"estaticas ({e}); rode como `python bridge_service.py --autoteste`")
+    if fonte:
+        linhas_do_fonte = fonte.splitlines()
+        # As agulhas sao MONTADAS por concatenacao de proposito: este arquivo esta
+        # lendo a si mesmo, e uma agulha escrita inteira encontraria ESTA linha alem
+        # da linha de verdade, e a contagem daria 2.
+        agulha_dll = "bcdmidi = C.Win" + "DLL("
+        linhas_dll = [ln for ln in linhas_do_fonte if agulha_dll in ln]
+        _check(len(linhas_dll) == 1,
+               f"1 linha carrega o BcdMidi.dll, achei {len(linhas_dll)}")
+        # SEM use_last_error=True, um C.get_last_error() de qualquer chamada
+        # ctypes deste modulo devolveria o erro de OUTRA WinDLL qualquer.
+        # Medido em 2026-08-01 (biblioteca anterior) com duas WinDLL de
+        # kernel32 lado a lado: a de fora da opcao deixou get_last_error() em 2
+        # enquanto o GetLastError do sistema dizia 3. O BcdMidi.dll de hoje
+        # reporta os PROPRIOS erros por errOut/hrOut e nao por GetLastError -
+        # ver criar_porta() -, mas a opcao continua obrigatoria nesta chamada:
+        # e a mesma regra que protege as outras WinDLL deste processo, e
+        # remove-la deixaria QUALQUER get_last_error() chamado depois desta
+        # linha, nesta thread, tao pouco confiavel quanto era o da biblioteca
+        # antiga.
+        _check(bool(linhas_dll) and "use_last_error=True" in linhas_dll[0],
+               f"o BcdMidi.dll TEM de ser carregado com use_last_error=True: "
+               f"{linhas_dll!r}")
+
+        # O SITIO DE CHAMADA. Sem esta verificacao, todo o bloco 5 poderia estar
+        # testando uma funcao que o programa nunca usa. O token nao aparece na
+        # documentacao de abrir_porta_uma_vez de proposito: apareceria aqui dentro e
+        # a verificacao passaria sem chamada nenhuma.
+        # Agulha montada pelo mesmo motivo da de cima, e aqui ela tem um segundo:
+        # escrita inteira, ela seria uma SEGUNDA "chamada" de abrir_porta_uma_vez aos
+        # olhos do arnes_invariante, que conta sitios de chamada por texto e exige
+        # exatamente um. Escrita assim, nao existe.
+        agulha_def = "def abrir_porta_uma_vez" + "("
+        i_def = [i for i, ln in enumerate(linhas_do_fonte) if ln.startswith(agulha_def)]
+        _check(len(i_def) == 1, f"1 def de abrir_porta_uma_vez, achei {len(i_def)}")
+        if i_def:
+            fim = min([i for i, ln in enumerate(linhas_do_fonte)
+                       if ln.startswith("def ") and i > i_def[0]] + [len(linhas_do_fonte)])
+            corpo = "\n".join(linhas_do_fonte[i_def[0]:fim])
+            _check("_diagnostico_falha_da_porta(" in corpo,
+                   "abrir_porta_uma_vez tem de MANDAR a falha para o diagnostico; sem "
+                   "este sitio de chamada o bloco 5 testa codigo que ninguem executa")
+            _check("em uso por outro programa" not in corpo,
+                   "abrir_porta_uma_vez nao pode ter mensagem propria de falha: era "
+                   "dela a frase que acusava conflito de nome sem olhar o erro")
 
     print(f"== {_ok + _falhas} verificacoes, {_falhas} falhas ==")
     return 1 if _falhas else 0

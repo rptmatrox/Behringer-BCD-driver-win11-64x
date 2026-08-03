@@ -31,6 +31,28 @@ MANIFEST_RESOURCE_ID RT_MANIFEST_TYPE "admin.manifest"
 // The uninstaller, built by the "uninstall" target of this folder's build.bat
 103 RCDATA "BCD3000Uninstall.exe"
 
+// The virtual MIDI port, built by native/bcdmidi/build.bat dll. It goes BESIDE
+// the control service, because that is the process that loads it.
+104 RCDATA "..\\native\\bcdmidi\\BcdMidi.dll"
+
+// *** MICROSOFT'S RUNTIME, AND THE ONE PAYLOAD HERE THAT IS NOT THIS PROJECT'S
+//     WORK. *** Windows MIDI Services, Copyright (c) Microsoft Corporation, from
+// github.com/microsoft/MIDI, under the MIT licence.
+//
+// MIT REQUIRES ITS COPYRIGHT NOTICE AND PERMISSION NOTICE TO TRAVEL WITH THIS
+// BINARY. They are reproduced in full in the repository's LICENSE, and printed by
+// this program itself - see printThirdPartyNotice() in setup.cpp - so that an
+// installer handed to somebody with no repository around it still carries them.
+// installer/verify's "exe" mode asserts both the notice and this payload's size.
+//
+// ONE FILE, ONE ID, ONE REFERENCE, referenced where the build already puts it
+// rather than copied into this folder - the same discipline as the two pictures
+// below. It is taken from runtimes/win-x64/native/ of the NuGet package and is
+// 2,892,288 bytes; the arm64 build of the same name is 6,111,744 and must not be
+// shipped. That is not left to a comment: the harness compares the embedded size
+// with 2,892,288 written as a literal.
+105 RCDATA "..\\native\\bcdmidi\\wms\\Windows.Devices.Midi2.dll"
+
 // The photograph of the device on the window's first page.
 //
 // ONE FILE, ONE ID, ONE REFERENCE - this line. The bytes of docs\BCD3000.PNG go
@@ -42,6 +64,17 @@ MANIFEST_RESOURCE_ID RT_MANIFEST_TYPE "admin.manifest"
 // *** IT IS A MANUFACTURER PRODUCT PHOTOGRAPH AND IS NOT COVERED BY THIS
 // PROJECT'S LICENCE. *** See installer\README.md.
 110 RCDATA "..\\docs\\BCD3000.PNG"
+
+// The screenshot of Zadig's window on the checks page.
+//
+// ONE FILE, ONE ID, ONE REFERENCE - this line, exactly like the photograph above,
+// and referenced where it already lives instead of being copied into this folder.
+//
+// A DIFFERENT LICENCE SITUATION FROM THE PHOTOGRAPH. This is a screenshot of the
+// owner's own machine, taken by the owner, showing the owner's own device. Zadig is
+// GPLv3; that licence covers the program, not a picture of its window. See
+// installer\README.md.
+111 RCDATA "..\\docs\\Zadig.png"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    BCD_VERSION_MAJOR,BCD_VERSION_MINOR,BCD_VERSION_PATCH,BCD_VERSION_BUILD
